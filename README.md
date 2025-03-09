@@ -299,5 +299,116 @@ OCR结果/
 希望这份说明能够帮助你成功使用这个图片文字识别工具！ 如果在使用过程中遇到任何问题，欢迎再次提问。
 
 
+好的，当然！  这是一份关于这个更新后的代码的通俗易懂的使用说明，它现在可以同时处理图片和 PDF 文件，并且依然对小白用户非常友好。
 
+# 3.high_f2_pdf2.py
+
+## 图片和 PDF 文字识别工具使用说明 
+
+这个工具升级啦！ 现在它不仅可以识别 **图片中的文字**，还可以直接处理 **PDF 文件**，把 PDF 文件里的每一页都识别出来，并提取文字！  如果你既有图片，又有 PDF 文件需要进行文字识别，用这个工具就更方便了。  它依然可以快速处理大量文件，并充分利用你电脑的性能。
+
+**1. 准备工作：安装工具 (与之前相同，但请再次确认)**
+
+你需要安装的“小工具”和之前图片文字识别工具是一样的： **Python**, **PaddlePaddle**, **PaddleX**, **PyYAML**, **Pillow (PIL)**,  以及新增的 **pypdfium2** 和 **PyMuPDF**。
+
+* **检查Python:**  同样先检查 Python 是否已安装。  打开 **命令提示符** (Windows) 或 **终端** (Mac/Linux)，输入 `python --version` 或 `python3 --version`。  已安装则跳过安装步骤，未安装则参考之前的说明安装。
+
+* **安装必要的 Python 库:** 在 **命令提示符** 或 **终端** 中依次输入以下命令，**每条命令输入完都按回车键**：
+
+    ```bash
+    pip install paddlepaddle
+    pip install paddlex
+    pip install pyyaml
+    pip install Pillow
+    pip install pypdfium2
+    pip install pymupdf
+    ```
+
+    或者 (如果 `pip` 不行，尝试 `pip3`)
+
+    ```bash
+    pip3 install paddlepaddle
+    pip3 install paddlex
+    pip3 install pyyaml
+    pip3 install Pillow
+    pip3 install pypdfium2
+    pip3 install pymupdf
+    ```
+
+    这些命令会安装 PaddlePaddle, PaddleX, PyYAML, Pillow, **pypdfium2 (用于 PDF 处理)** 和 **PyMuPDF (另一个 PDF 处理库)**。  请确保所有库都安装成功，看到 "Successfully installed ..." 的提示。
+
+**2. 下载代码和配置文件 (与之前完全相同)**
+
+你需要把代码（从 `# import paddlex as pdx` 到 `if __name__ == "__main__":` 部分）复制保存为 `.py` 文件，例如 `ocr_tool.py`。  配置文件 `OCR.yaml` 也需要准备好，并放在和代码文件 **同一个文件夹**。  `OCR.yaml` 的内容可以使用默认配置，或者根据需要调整 (高级用户)。  **确保 `OCR.yaml` 和 `ocr_tool.py` 在同一目录下。**
+
+**3. 准备 PDF 和图片文件夹，设置输出文件夹**
+
+  * **PDF 和图片文件夹:**  现在你需要准备一个 **文件夹**，**这个文件夹里面可以同时放 PDF 文件 和 图片文件** (JPG, JPEG, PNG, BMP)。  程序会自动识别并处理 PDF 和图片。  例如，你可以新建一个文件夹 `我的文档`，然后把你要处理的所有 PDF 和图片都放进去。 **记住这个文件夹的路径**。
+
+  * **输出文件夹:**  和之前一样，准备一个 **空的文件夹** 用于存放识别结果 (JSON 文件)。  例如 `OCR结果文件夹`。 **同样要记住这个文件夹的路径，并且确保一开始是空的。**
+
+**4. 修改代码中的路径 (与之前的图片工具类似)**
+
+打开你的 `.py` 代码文件 (比如 `ocr_tool.py`)。  找到以下几行代码：
+
+```python
+config_path = "/media/tmzn/DATA5/ocr_paddle/config_paddle/OCR.yaml"
+image_root_dir = "/media/tmzn/DATA5/ocr_paddle/tmppdf"  #  PDF folder
+output_root_dir = "/media/tmzn/DATA5/ocr_paddle/tmpicture_ocr_results2" # OCR results folder
+log_and_error_dir = "/media/tmzn/DATA5/ocr_paddle/ocr_logs_and_errors2" # Log and error folder
+```
+
+和之前的说明一样，你需要 **修改这些路径为你电脑上实际的路径**。
+
+* **`config_path = "/media/tmzn/DATA5/ocr_paddle/config_paddle/OCR.yaml"`:**  **改成 `config_path = "OCR.yaml"`** (假设 `OCR.yaml` 和代码文件在同一文件夹)。
+
+* **`image_root_dir = "/media/tmzn/DATA5/ocr_paddle/tmppdf"`:**  **重要：**  现在 `image_root_dir`  变量的名字可能有点误导，虽然名字是 `image_root_dir`，但实际上它现在 **是你存放 PDF 文件和图片文件的那个总文件夹的路径**。  所以，**改成 `image_root_dir = "你的 PDF和图片总文件夹的路径"`**  ，  **把双引号里的内容替换成你准备好的 `我的文档` 文件夹 (或者你命名的总文件夹) 的完整路径**。
+
+* **`output_root_dir = "/media/tmzn/DATA5/ocr_paddle/tmpicture_ocr_results2"`:**  改成  `output_root_dir = "你的输出文件夹的路径"`  ，  **替换成你准备好的 `OCR结果文件夹` (或你命名的输出文件夹) 的完整路径**。
+
+* **`log_and_error_dir = "/media/tmzn/DATA5/ocr_paddle/ocr_logs_and_errors2"`:** 日志和错误文件夹路径，可以修改或保持默认。
+
+**路径写法和注意事项** 仍然与之前的说明相同。  修改完成后，**保存代码文件**。
+
+**5. 运行代码，开始识别 PDF 和图片文字**
+
+打开 **命令提示符** (Windows) 或 **终端** (Mac/Linux)。
+
+1.  **切换到代码文件目录:**  使用 `cd` 命令，切换到 `ocr_tool.py` 和 `OCR.yaml` 所在的文件夹。
+
+2.  **运行代码:**  输入以下命令并回车：
+
+    ```bash
+    python ocr_tool.py
+    ```
+
+    或者 `python3 ocr_tool.py` (根据你的 Python 版本，以及你保存的代码文件名)。
+
+    程序开始运行，你会看到命令行窗口显示处理进度。  **注意，现在程序会先处理 PDF 文件，把 PDF 每一页转成图片，然后再对这些图片以及你文件夹里原有的图片进行文字识别。**  进度信息会动态更新，显示已处理的页数/图片数，平均速度，预计完成时间等等。
+
+**6. 查看识别结果 (与之前类似，但结果结构稍有变化)**
+
+程序运行结束后，打开你的 **输出文件夹** (例如 `OCR结果文件夹`)。
+
+*   **PDF 文件的结果:**  对于你输入的 PDF 文件，程序会在输出文件夹里 **为每个 PDF 文件创建一个单独的文件夹**，文件夹名字和 PDF 文件名相同。  在 PDF 文件夹里，你会看到：
+    *   `temp_images` 文件夹： 里面是 PDF 每一页转换成的 PNG 图片 (默认情况下，程序运行结束后会 **自动删除** 这个 `temp_images` 文件夹，如果你想保留临时图片，需要修改代码中的 `delete_temp_images = True` 为 `False`)。
+    *   `page_0001_result.json`, `page_0002_result.json`, ... 等文件： 这些是 PDF 每一页的文字识别结果，以 JSON 格式保存。
+    *   `PDF文件名_result.json` 文件 (例如 `我的PDF文档_result.json`)：  这是一个 **汇总文件**，它包含了 **整个 PDF 文档所有页面的识别结果**，方便你一次性查看整个 PDF 的文字内容。
+
+*   **图片文件的结果:**  对于你输入的图片文件，识别结果的 JSON 文件会 **直接保存在输出文件夹中**，文件名会以 `图片文件名_result.json` 的格式命名。  输出文件夹的目录结构会尽量保持和你的输入文件夹一致。
+
+**7. 关于 "进程数" (num\_processes) 和 CPU/GPU 设置 (与之前完全相同)**
+
+*   **进程数 (num\_processes):**  调整 `num_processes` 变量的值可以控制程序使用的 “小帮手” 数量，根据电脑配置调整，默认值通常够用。
+
+*   **CPU/GPU 设置:**  `use_cpu = False` 默认使用 GPU 加速 (推荐)。  改成 `use_cpu = True`  强制使用 CPU。
+
+**新增功能和注意事项:**
+
+*   **PDF 文件处理:**  这个版本的工具可以 **直接处理 PDF 文件** 了！  你不需要手动把 PDF 转换成图片再识别，程序会自动完成 PDF 转换和识别的全过程。
+*   **PDF 结果汇总:**  程序会为每个 PDF 文件生成一个 **汇总的 JSON 结果文件**，方便你查看整个 PDF 的识别内容。
+*   **临时图片删除:**  PDF 转换成图片的临时文件，默认情况下会在识别完成后 **自动删除**，节省磁盘空间。  可以通过修改 `delete_temp_images` 变量来控制是否删除临时图片。
+*   **其他注意事项:**  之前的 “常见问题和注意事项” (路径错误, 权限问题, 缺少依赖库, 文件名乱码, 内存占用, 识别精度等) 仍然适用。
+
+希望这个升级后的工具能够更好地帮助你进行图片和 PDF 文字识别！  使用中有任何问题，欢迎随时提出。
 
