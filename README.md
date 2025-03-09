@@ -15,7 +15,8 @@
 ## 2. 制作可以搜索的pdf
 
 请使用pdf_creator_with_text_layer5.py完成。
-
+## 3. 直接pdf进行ocr
+请使用highocr3_f2_pdf.py完成
 --- 
 # 代码说明
 
