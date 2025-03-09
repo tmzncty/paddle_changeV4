@@ -29,6 +29,121 @@
 # 0. PDF拆图
 
 
+## PDF拆图工具使用说明 
+
+这个工具可以帮助你把 **PDF文件** 变成一张张 **图片**。  如果你有一些PDF文件，想把它们里面的每一页都变成图片（比如PNG格式），这个工具就非常有用。 它可以一次性处理很多PDF文件，并且速度很快。
+
+**1. 准备工作：安装工具**
+
+首先，你的电脑需要安装一个叫做 **Python** 的程序，并且安装一个叫做 **PyMuPDF** 的“小工具”。  不用担心，安装过程很简单，就像给手机安装APP一样。
+
+  * **检查Python:**  大部分电脑可能已经安装了Python。你可以打开电脑的 **命令提示符** (Windows 用户) 或者 **终端** (Mac/Linux 用户)，输入 `python --version`  或者  `python3 --version`  然后按下回车键。 如果显示了Python的版本号，就说明你已经安装了Python，可以跳过安装Python的步骤。 如果提示找不到命令，就需要先安装Python。
+
+      * **如果需要安装Python:**  你可以去Python官网下载安装程序：[https://www.python.org/downloads/](https://www.google.com/url?sa=E&source=gmail&q=https://www.python.org/downloads/)  下载最新版本的Python安装包，然后按照提示一步一步安装就可以了。  安装的时候注意勾选 "Add Python to PATH" 选项，这样方便在命令行中使用Python。
+
+  * **安装 PyMuPDF:**  安装好Python之后，继续在 **命令提示符** 或 **终端** 中输入下面这条命令，然后按下回车键：
+
+    ```bash
+    pip install pymupdf
+    ```
+
+    或者 (如果 `pip` 命令不行，尝试使用 `pip3`)
+
+    ```bash
+    pip3 install pymupdf
+    ```
+
+    这条命令会自动从网上下载并安装 PyMuPDF 这个“小工具”。  安装过程中可能会显示一些信息，等待安装完成即可。  如果看到 "Successfully installed PyMuPDF" 这样的提示，就说明安装成功了。
+
+**2. 下载和放置代码文件**
+
+你需要把上面你看到的那些代码（从 `# 0. PDF拆图` 到 `process_all_pdfs(pdf_folder, base_output_folder, num_processes)`  以及最后的 `if __name__ == "__main__":` 部分）复制下来，保存到一个文本文件里。  你可以使用电脑自带的 **记事本** (Windows) 或者 **文本编辑器** (Mac)。
+
+保存的时候，注意把文件后缀名改成 `.py`，例如你可以把文件命名为 `pdf_to_image.py`  或者 `pdf_converter.py`  等等，文件名你可以自己取，但是 **后缀名一定要是 `.py`** 。  保存文件的位置你也可以自己选择，比如你可以保存在桌面或者你常用的文件夹里。
+
+**3. 准备PDF文件和设置输出文件夹**
+
+  * **PDF文件夹:**  你需要准备一个文件夹，里面存放你想要转换成图片的 **PDF文件**。  比如你可以新建一个文件夹，命名为 `我的PDF文件`，然后把你想要处理的所有PDF文件都放进去。  **记住这个文件夹的路径**，后面要用到。  例如，如果你的 "我的PDF文件" 文件夹放在桌面上，那么它的路径可能是类似于  `C:\Users\你的用户名\Desktop\我的PDF文件` (Windows) 或者 `/Users/你的用户名/Desktop/我的PDF文件` (Mac)。  **路径要写完整**。
+
+  * **输出文件夹:**  你还需要准备一个 **空的文件夹**，用来存放转换出来的图片。  比如你可以再新建一个文件夹，命名为 `输出图片`。  **同样要记住这个文件夹的路径**。  例如，如果你的 "输出图片" 文件夹也放在桌面上，那么它的路径可能是类似于 `C:\Users\你的用户名\Desktop\输出图片` (Windows) 或者 `/Users/你的用户名/Desktop/输出图片` (Mac)。 **这个文件夹一开始必须是空的，程序会自动在里面创建子文件夹来存放图片。**
+
+**4. 修改代码中的路径**
+
+打开你刚刚保存的 `.py` 代码文件 (比如 `pdf_to_image.py`)。  在代码中，你会看到下面这两行：
+
+```python
+pdf_folder = "/media/tmzn/DATA5/ocr_paddle/tmppdf"  # PDF文件夹路径
+base_output_folder = "/media/tmzn/DATA5/ocr_paddle/tmpicture"  # 输出文件夹路径
+```
+
+你需要把这两行代码中的路径 **替换成你电脑上实际的 PDF文件夹路径 和 输出文件夹路径**。
+
+  * 把 `pdf_folder = "/media/tmzn/DATA5/ocr_paddle/tmppdf"`  改成  `pdf_folder = "你的PDF文件夹的路径"`  ，  **把双引号里面的内容替换成你上面准备好的 PDF文件夹的完整路径**。
+  * 把 `base_output_folder = "/media/tmzn/DATA5/ocr_paddle/tmpicture"`  改成  `base_output_folder = "你的输出文件夹的路径"`  ， **把双引号里面的内容替换成你上面准备好的 输出文件夹的完整路径**。
+
+**注意:**  路径要用 **英文双引号**  `"`  括起来。  路径中如果包含反斜杠 `\` (Windows 路径)，在Python代码中可能需要写成双反斜杠 `\\` 或者用正斜杠 `/` 代替。  例如，Windows路径 `C:\Users\User\Documents\PDFs`  在代码中可以写成  `"C:\\Users\\User\\Documents\\PDFs"`  或者 `"C:/Users/User/Documents/PDFs"`。  Mac 和 Linux 路径一般用正斜杠 `/`。
+
+改完之后，**保存你的代码文件**。
+
+**5. 运行代码，开始转换**
+
+打开 **命令提示符** (Windows) 或者 **终端** (Mac/Linux)。
+
+1.  **切换到代码文件所在的目录:**  使用 `cd` 命令。  例如，如果你的 `pdf_to_image.py` 文件保存在桌面，你可能需要先输入 `cd Desktop` (Windows)  或者 `cd ~/Desktop` (Mac/Linux)  ，然后按下回车键。  如果你的代码文件保存在其他文件夹，就需要使用 `cd` 命令切换到相应的文件夹。
+
+2.  **运行代码:**  在命令提示符或终端中输入下面这条命令，然后按下回车键：
+
+    ```bash
+    python pdf_to_image.py
+    ```
+
+    或者 (如果 `python` 命令不行，尝试使用 `python3`)
+
+    ```bash
+    python3 pdf_to_image.py
+    ```
+
+    （请把 `pdf_to_image.py` 替换成你实际保存的代码文件名）。
+
+    按下回车后，程序就开始运行了。  你会看到命令行窗口中显示转换进度，例如：
+
+    ```
+    Processing PDF: example1.pdf
+    PDF to Image Progress: [10.00%] 1/10 pages, Speed: 0.50 pages/sec, Elapsed: 2.00 sec
+    PDF to Image Progress: [20.00%] 2/10 pages, Speed: 0.67 pages/sec, Elapsed: 3.00 sec
+    ...
+    PDF to Image conversion complete.
+    Processing PDF: example2.pdf
+    ...
+    ```
+
+    程序会一个接一个地处理你 PDF文件夹 中的所有 PDF 文件。  每处理完一个 PDF 文件，就会在你的 **输出文件夹** 中创建一个以 PDF 文件名命名的文件夹，然后把这个 PDF 文件转换成的图片都放在这个新文件夹里。
+
+**6. 查看转换结果**
+
+等待程序运行完成 (当命令行窗口不再显示进度信息，并且回到可以输入命令的状态时，就表示程序运行完了)。  打开你之前设置的 **输出文件夹**。  你会看到，里面多了一些文件夹，每个文件夹的名字都和你处理的 PDF 文件名对应。  打开这些文件夹，就可以看到 PDF 文件转换成的 PNG 图片了。  图片文件会按照页码顺序命名，例如 `page_0001.png`, `page_0002.png`  等等。
+
+**7.  关于 "进程数" (num\_processes)**
+
+在代码中，你还会看到这样一行：
+
+```python
+num_processes = 8  # 根据您的CPU核心数调整
+```
+
+这个 `num_processes = 8`  的意思是程序在转换 PDF 文件的时候，会同时使用 8 个“小帮手”一起工作，这样可以加快转换速度。  `8`  这个数字你可以根据你的电脑配置进行调整。  一般来说，如果你的电脑配置比较好 (CPU 核心数比较多)，可以适当调大这个数字，例如 12 或者 16。  如果电脑配置一般，或者不确定，保持默认的 `8`  或者设置成更小的数字 (例如 4 或者 2) 也可以。  对于普通用户来说，不修改这个数字通常就可以了。
+
+**常见问题和注意事项:**
+
+  * **路径错误:**  最常见的问题是 PDF文件夹路径 或者 输出文件夹路径 设置错误。  请仔细检查你代码中修改的路径是否正确，路径是否写完整，文件夹是否真的存在。
+  * **权限问题:**  如果程序运行出错，提示权限不足，可能是因为程序没有权限访问你的 PDF文件夹 或者 输出文件夹。  你可以尝试把 PDF文件夹 和 输出文件夹 放在一个你确定有读写权限的位置，例如桌面或者 "文档" 文件夹。
+  * **缺少依赖库:**  如果在运行代码的时候提示缺少 `fitz` 库，请再次检查你是否成功安装了 PyMuPDF (执行 `pip install pymupdf` 命令)。
+  * **文件名乱码:**  如果 PDF 文件名或者输出文件夹名包含中文或者特殊字符，可能会出现乱码问题。  尽量使用英文文件名和文件夹名可以减少出现问题的可能性。
+  * **内存占用:**  转换大型 PDF 文件或者同时处理很多 PDF 文件可能会占用较多内存。  如果你的电脑内存较小，可能会出现卡顿或者程序崩溃的情况。  可以尝试减少 `num_processes` 的值，或者一次性处理的 PDF 文件数量不要太多。
+
+
+
+
 
 ## highocr3_f2.py 
 已经实现大文件夹下内有子文件夹的ocr并保留原始格式，且多进程外加上删除缓存图片，可以直接用。
