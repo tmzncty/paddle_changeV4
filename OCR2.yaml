@@ -1,0 +1,7 @@
+Global:
+  pipeline_name: OCR  # 产线名称，可以自定义
+Pipeline:
+  text_det_model: PP-OCRv4_mobile_det
+  text_rec_model: PP-OCRv4_mobile_rec
+  text_rec_batch_size: 64 # 根据您的GPU显存调整，可适当增大
+  device: "gpu:0"          # 使用的GPU设备，如果使用CPU改为 "cpu"
