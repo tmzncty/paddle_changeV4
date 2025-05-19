@@ -478,6 +478,181 @@ log_and_error_dir = "/media/tmzn/DATA5/ocr_paddle/ocr_logs_and_errors2" # Log an
 **更新说明摘要示例:**
 此版本对OCR处理脚本进行了重大重构和优化。主要改进包括：引入了灵活的用户配置参数（支持多输入源和`PADDLEX_HOME`覆盖），显著提升了处理大量PDF文件时的并行准备效率，优化了缓存管理机制，增强了错误处理和日志记录的详细程度。新的多阶段处理流程使得任务管理更加清晰，同时改进了进度报告和用户体验。这些更改旨在提高脚本的整体性能、可配置性、健壮性和易用性。
 
+
+
+# 高性能 PaddleX OCR 脚本 (highocr4_f1_pdf_img.py)
+
+本项目是一个基于 PaddleX 实现的高性能光学字符识别（OCR）Python 脚本。它能够批量处理指定的PDF文件和图片文件夹，提取其中的文本信息，并将结果保存为 JSON 文件。脚本设计了多级并行处理机制以提高效率，并提供了丰富的配置选项。
+
+## 主要功能
+
+* **支持多种输入源**：可同时处理 PDF 文件和包含图片的文件夹。
+* **PDF 页面提取**：自动将 PDF 文件按页面转换为图片（PNG格式）进行 OCR。
+* **多级并行处理**：
+    * 并行准备多个 PDF 文件（页面提取和待 OCR 列表生成）。
+    * 并行进行 OCR 任务（使用独立的进程池）。
+    * （注意：单个PDF内的页面渲染当前版本改为串行，以解决潜在的嵌套 Pool 问题）。
+* **结果缓存/跳过**：如果某个图片/页面的 OCR 结果 JSON 文件已存在，则跳过该文件的处理，避免重复工作。
+* **PaddleX 缓存管理**：
+    * 允许用户指定 `PADDLEX_HOME` 环境变量的覆盖路径，以控制 PaddleX 模型和临时文件的存储位置。
+    * 脚本启动时会尝试清理指定的 PaddleX 临时缓存目录。
+    * 强烈建议用户在特定情况下手动创建符号链接以确保缓存路径正确。
+* **灵活配置**：大部分关键参数（如并发数、输入输出路径、模型配置等）均可在脚本顶部进行配置。
+* **CPU/GPU 支持**：可配置 OCR 任务使用 CPU 或 GPU。
+* **详细日志记录**：记录脚本运行过程中的关键信息、错误和统计数据。
+* **错误处理**：处理失败的图片会被复制到指定的错误图片目录。
+* **临时文件管理**：可配置是否在处理完 PDF 后删除从 PDF 转换产生的临时图片。
+* **进度显示**：在控制台实时显示 OCR 处理进度、平均速度和预计剩余时间。
+* **彩色控制台输出**：使用不同颜色标记不同类型的日志信息，便于阅读。
+
+## 环境依赖
+
+* Python 3.x
+* PaddlePaddle (`paddlepaddle` 或 `paddlepaddle-gpu`，根据你的硬件选择)
+* PaddleX (`paddlex`)
+* PyMuPDF (`fitz`)：用于 PDF 文件解析和页面渲染。
+* Pillow (`PIL`)：用于图像基本操作和校验。
+* PyYAML (`yaml`)：用于加载和修改 PaddleX 配置文件。
+* NumPy (`numpy`)
+* pypdfium2 (虽然 `fitz` 是主要渲染工具，但此库也被导入)
+
+**安装建议**：
+建议在虚拟环境中安装依赖。
+```bash
+pip install paddlepaddle  # 或者 paddlepaddle-gpu
+pip install paddlex
+pip install PyMuPDF Pillow PyYAML numpy pypdfium2
+````
+
+## 配置文件和目录结构
+
+### 1\. PaddleX 模型配置文件
+
+  * 脚本通过 `CONFIG_PATH_PADDLE` 参数指定 PaddleX OCR 模型的 YAML 配置文件路径。
+  * 示例配置 `OCR.yaml` 需要用户自行准备，并确保其与所使用的 PaddleX 版本和模型兼容。
+
+### 2\. 输入与输出
+
+  * **输入源 (`INPUT_SOURCES`)**：
+      * 一个列表，每个元素是一个字典，定义一个输入源。
+      * 字典包含 `path` (绝对路径) 和 `type` ('pdf' 或 'image')。
+      * 脚本会递归扫描指定路径下的所有符合类型的文件。
+  * **OCR 结果输出根目录 (`OUTPUT_ROOT_DIR`)**：
+      * 所有 OCR 结果（JSON 文件）和从 PDF 转换的临时图片都会存放在此目录下。
+      * 输出目录会保持与输入源相对路径一致的结构。
+      * 例如，如果输入图片为 `/media/tmzn/DATA4/splitdict/汉语/类别A/img1.jpg`，输出根目录为 `/media/tmzn/DATA5/ocr_paddle/词典pdf_ocr_result`，则结果JSON会保存在 `/media/tmzn/DATA5/ocr_paddle/词典pdf_ocr_result/类别A/img1_result.json`。
+      * 对于 PDF 文件，例如 `/media/tmzn/DATA5/ocr_paddle/词典pdf/book1.pdf`，其每页的 JSON 结果会保存在 `/media/tmzn/DATA5/ocr_paddle/词典pdf_ocr_result/词典pdf/book1/page_XXXX_result.json`，临时图片（如果未删除）会保存在 `/media/tmzn/DATA5/ocr_paddle/词典pdf_ocr_result/词典pdf/book1/temp_images_from_pdf/page_XXXX.png`。
+  * **日志和错误图片目录 (`LOG_AND_ERROR_DIR_BASE`)**：
+      * `ocr_log.txt`：详细的运行日志。
+      * `error_images/`：存放处理失败的原始图片。
+
+## 参数配置 (用户可配置)
+
+在脚本的 `highocr4_f1_pdf_img.py` 文件顶部，可以找到以下用户可配置参数：
+
+  * `PADDLEX_HOME_OVERRIDE`: (字符串) PaddleX 缓存主目录。用于重定向 PaddleX 的缓存和临时文件，防止占满默认用户主目录磁盘。
+      * **重要提示**：如果 PaddleX 仍然将临时文件写入默认的 `~/.paddlex/temp/` 并导致磁盘空间不足，请务必按照脚本注释中的建议，手动将 `~/.paddlex/temp` 符号链接到此 `PADDLEX_HOME_OVERRIDE` 下的 `temp` 目录。例如：`ln -sfn /media/tmzn/DATA5/paddlex_cache_home/temp ~/.paddlex/temp`。
+  * `CONFIG_PATH_PADDLE`: (字符串) PaddleX OCR 模型配置文件 (例如 `OCR.yaml`) 的绝对路径。
+  * `INPUT_SOURCES`: (列表) 输入源配置。每个元素是一个字典，包含：
+      * `path`: (字符串) 输入文件夹的绝对路径。
+      * `type`: (字符串) `'pdf'` 或 `'image'`。
+  * `OUTPUT_ROOT_DIR`: (字符串) OCR 结果统一输出的根目录。
+  * `LOG_AND_ERROR_DIR_BASE`: (字符串) 日志文件和错误图片存放的根目录。
+  * `DELETE_TEMP_IMAGES_AFTER_PDF_PROCESSING`: (布尔值) 是否删除 PDF 转换产生的临时图片 (`True` 删除, `False` 保留)。
+  * `NUM_RENDER_PROCESSES_PER_PDF`: (整数) 单个PDF内页面渲染时的并发进程数。*注意：当前版本中，由于 `prepare_single_pdf_for_ocr` 内部页面渲染改为串行，此参数主要影响串行渲染的逻辑，但保留以便将来可能恢复嵌套并行。*
+  * `NUM_OCR_PROCESSES`: (整数) 主 OCR 任务的并发进程数（即同时处理多少张图片/页面）。
+  * `OCR_BATCH_SIZE`: (整数) PaddleX OCR 模型的批处理大小。增大此值可能提高 GPU 利用率，但需注意显存。
+  * `NUM_CONCURRENT_PDF_PREP_PROCESSES`: (整数) 并行准备 PDF 文件的进程数。决定同时有多少个 PDF 文件可以被并行地进行页面提取和待 OCR 列表的生成。
+  * `USE_CPU_FOR_OCR`: (布尔值) 是否强制使用 CPU 进行 OCR (`True` 表示使用 CPU，`False` 表示根据配置文件，通常是 GPU)。
+
+## 使用方法
+
+1.  **安装依赖**：确保所有必要的 Python 包已安装（参见 [环境依赖](https://www.google.com/search?q=%23%E7%8E%AF%E5%A2%83%E4%BE%9D%E8%B5%96)）。
+2.  **准备 PaddleX 模型**：
+      * 获取或训练一个 PaddleX OCR 模型。
+      * 准备对应的 `OCR.yaml` 配置文件。
+3.  **配置脚本参数**：
+      * 打开 `highocr4_f1_pdf_img.py` 文件。
+      * 根据你的环境和需求，修改脚本顶部的用户可配置参数（路径、并发数等）。
+      * 特别注意 `PADDLEX_HOME_OVERRIDE`、`CONFIG_PATH_PADDLE`、`INPUT_SOURCES` 和 `OUTPUT_ROOT_DIR` 的设置。
+4.  **运行脚本**：
+    ```bash
+    python highocr4_f1_pdf_img.py
+    ```
+5.  **查看结果**：
+      * OCR 结果 (JSON 文件) 会保存在 `OUTPUT_ROOT_DIR` 下对应的子目录中。
+      * 运行日志会保存在 `LOG_AND_ERROR_DIR_BASE/ocr_log.txt`。
+      * 处理失败的图片会保存在 `LOG_AND_ERROR_DIR_BASE/error_images/`。
+
+## 工作流程概述
+
+1.  **初始化**：
+      * 设置 `PADDLEX_HOME` 环境变量（如果 `PADDLEX_HOME_OVERRIDE` 已配置）。
+      * 创建必要的输出和日志目录。
+      * 清理 PaddleX 缓存目录 (`clear_cache()`)。
+      * 记录开始时间。
+2.  **扫描输入源**：
+      * 遍历 `INPUT_SOURCES` 中定义的每个路径。
+      * 对于 PDF 文件，构建 PDF 准备任务列表。
+      * 对于图片文件，检查其对应的 JSON 结果是否已存在。如果不存在，则直接构建 OCR 任务列表。
+3.  **PDF 准备阶段** (使用 `NUM_CONCURRENT_PDF_PREP_PROCESSES` 个进程并行处理不同的 PDF 文件)：
+      * 对于每个 PDF 文件，调用 `prepare_single_pdf_for_ocr` 函数：
+          * 创建该 PDF 对应的临时图片输出目录和 OCR 结果输出目录。
+          * 获取 PDF 总页数。
+          * **串行地**（在 `prepare_single_pdf_for_ocr` 内部）为每一页调用 `render_page`：
+              * 将 PDF 页面渲染为 PNG 图片，保存到临时图片目录。
+              * 如果页面图片已存在，则跳过渲染。
+          * 检查渲染后的图片对应的 OCR 结果 JSON 文件是否已存在。
+          * 如果 JSON 不存在，则将该图片的路径添加到待 OCR 任务列表。
+          * 返回待 OCR 的图片路径列表、此 PDF 中跳过的 OCR 任务数、临时图片文件夹路径以及 OCR 结果输出目录。
+4.  **收集 OCR 任务**：
+      * 汇总所有直接来自图片输入源和来自 PDF 准备阶段的待 OCR 图片任务。
+5.  **OCR 执行阶段** (使用 `NUM_OCR_PROCESSES` 个工作进程并行处理图片)：
+      * 初始化 OCR 工作进程池 (`ocr_pool`)，每个工作进程加载 PaddleX 模型 (`init_worker`)。
+      * 将所有待 OCR 的图片任务提交到 `ocr_pool`。
+      * 每个工作进程执行 `process_image` 函数：
+          * 校验图片是否有效。
+          * 调用 PaddleX `pipeline.predict()` 进行 OCR。此步骤的 PaddleX 内部输出会被重定向以保持控制台清洁。
+          * 将 OCR 识别结果保存为 JSON 文件。
+          * 如果处理过程中发生错误，将原始图片复制到 `error_images` 目录。
+      * 主进程监控 OCR 任务的完成情况，并实时更新控制台进度条。
+6.  **清理**：
+      * 如果 `DELETE_TEMP_IMAGES_AFTER_PDF_PROCESSING` 为 `True`，则删除所有在 PDF 处理过程中产生的临时图片文件夹。
+7.  **总结与报告**：
+      * 输出总处理时间、成功/失败任务数、跳过任务数等统计信息。
+
+## 注意事项
+
+  * **PaddleX 缓存 (`PADDLEX_HOME_OVERRIDE` 和符号链接)**：
+      * PaddleX 在运行时会下载模型、生成临时文件等，默认情况下这些文件存储在 `~/.paddlex/`。如果主目录磁盘空间有限，这可能导致问题。
+      * `PADDLEX_HOME_OVERRIDE` 参数允许你指定一个新的基础目录。脚本会尝试通过设置 `PADDLEX_HOME` 环境变量来让 PaddleX 使用这个新路径。
+      * **关键**：某些 PaddleX 版本或特定操作可能仍会尝试写入 `~/.paddlex/temp`。如果遇到此问题，最可靠的解决方案是**手动创建符号链接**，将 `~/.paddlex/temp` 指向 `PADDLEX_HOME_OVERRIDE/temp`。例如：
+        ```bash
+        # 假设 PADDLEX_HOME_OVERRIDE = "/mnt/large_disk/paddlex_cache"
+        mkdir -p /mnt/large_disk/paddlex_cache/temp
+        rm -rf ~/.paddlex/temp  # 如果已存在，先删除或备份
+        ln -sfn /mnt/large_disk/paddlex_cache/temp ~/.paddlex/temp
+        ```
+      * 脚本中的 `clear_cache()` 函数会尝试清理 `PADDLEX_HOME_OVERRIDE/temp` 和 `~/.paddlex/temp`。如果 `~/.paddlex/temp` 是一个指向 `PADDLEX_HOME_OVERRIDE/temp` 的符号链接，它会优先管理目标真实目录，并尝试保持符号链接的有效性。
+  * **PyMuPDF (`fitz`) 与多进程**：`fitz.open()` 在多进程环境中，尤其是在子进程中再次创建进程池时，可能存在不稳定性或导致进程挂起。当前版本已将单个 PDF 内的页面渲染改为串行，以避免此类问题。主要的并行性体现在同时处理多个不同的 PDF 文件以及同时进行多个 OCR 任务。
+  * **配置文件兼容性**：确保 `CONFIG_PATH_PADDLE` 指向的 `OCR.yaml` 与你安装的 PaddleX 和 PaddlePaddle 版本兼容。
+  * **显存/内存**：较大的 `OCR_BATCH_SIZE` 和较多的 `NUM_OCR_PROCESSES`（尤其是在 GPU 模式下）会消耗更多显存和内存。请根据硬件资源进行调整。
+  * **文件路径**：脚本中所有路径配置（如 `CONFIG_PATH_PADDLE`, `INPUT_SOURCES` 中的 `path`, `OUTPUT_ROOT_DIR` 等）都应使用绝对路径，以避免潜在的相对路径问题。
+  * **错误排查**：
+      * 首先检查 `LOG_AND_ERROR_DIR_BASE/ocr_log.txt` 中的日志信息。
+      * 查看 `LOG_AND_ERROR_DIR_BASE/error_images/` 目录中是否有处理失败的图片。
+      * 检查 PaddleX 缓存目录和 `~/.paddlex/temp` 是否有异常。
+
+## 未来可能的改进
+
+  * 更细致的进度条，分别显示 PDF 准备进度和 OCR 进度。
+  * 更完善的错误重试机制。
+  * 通过命令行参数传递配置，而非直接修改脚本。
+  * 支持更多图片和文档格式。
+
+
+
+
 # del_10min_cache.py
 # 自动清理过期文件脚本 (Auto Clean Expired Files)
 
