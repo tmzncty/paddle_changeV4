@@ -10,6 +10,13 @@
 
 **同时对磁盘的4K读写及寿命要求极高，很容易出现谈笑之间写了一个T的情况。如果是一般消费级磁盘请谨慎使用。（谁用消费级磁盘处理大量数据啊？）**
 
+
+# conda初始化
+对于windows
+set-ExecutionPolicy RemoteSigned
+A
+
+
 # 主要功能
 ## 0. pdf拆图
 请使用pdf_to_png.py完成
