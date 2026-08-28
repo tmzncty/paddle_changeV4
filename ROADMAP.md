@@ -193,11 +193,11 @@ paddle-batch-ocr run --config CONFIG
 - [x] real serial PaddleX CPU OCR
 - [x] spawn worker lifecycle test on Python 3.9 / 3.12
 - [x] real two-worker PaddleX CPU OCR
+- [x] real serial/parallel PaddleX manifest-provenance assertions
 - [x] pip cache for heavy jobs
 - [x] PaddleX official-model cache
 - [x] current official Actions major versions
 - [x] no duplicate feature-branch push + PR OCR jobs
-- [ ] real serial/parallel PaddleX manifest-provenance assertions
 - [ ] GPU manual / self-hosted smoke
 - [ ] expanded geometry golden tests
 
