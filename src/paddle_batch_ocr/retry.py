@@ -116,13 +116,37 @@ def _decode_profile(value: object) -> Dict[str, object]:
     return decoded
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Normalize ``.``/``..`` and make absolute without resolving symlinks."""
+
+    return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+
+
+def _reject_existing_symlink_components(path: Path, *, label: str) -> Path:
+    """Reject existing symlinks anywhere in the lexical path.
+
+    ``Path.resolve()`` cannot be used before this check: doing so would erase
+    the very symlink component that the retry trust boundary promises to reject.
+    Missing future components are fine and are checked again immediately before
+    execution.
+    """
+
+    lexical = _lexical_absolute(path)
+    anchor = Path(lexical.anchor)
+    current = anchor
+    parts = lexical.parts[1:] if lexical.anchor else lexical.parts
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise RetryError(f"{label} contains symlink component: {current}")
+    return lexical
+
+
 def _source_path(row: Mapping[str, object]) -> Path:
     raw = row.get("source_path")
     if not isinstance(raw, str) or not raw:
         raise RetryError("source_path is missing")
-    path = Path(raw)
-    if path.is_symlink():
-        raise RetryError(f"source is a symlink: {path}")
+    path = _reject_existing_symlink_components(Path(raw), label="source path")
     try:
         resolved = path.resolve(strict=True)
     except FileNotFoundError as exc:
@@ -138,23 +162,38 @@ def _source_path(row: Mapping[str, object]) -> Path:
     return resolved
 
 
+def _validate_source_scope(source: Path, config: ProjectConfig) -> None:
+    """Limit automatic reads to configured inputs or project-produced artifacts."""
+
+    allowed_roots = [config.output_root]
+    allowed_roots.extend(item.path for item in config.input_sources)
+    if any(source == root or is_within(source, root) for root in allowed_roots):
+        return
+    raise RetryError(
+        f"source is outside configured input sources and output_root: {source}"
+    )
+
+
 def _reject_symlink_components(path: Path, root: Path) -> None:
-    """Reject any existing symlink component between root and target."""
+    """Reject lexical symlink components and enforce output-root containment."""
 
     root = Path(root).expanduser().resolve(strict=False)
-    raw = Path(path).expanduser()
-    resolved = raw.resolve(strict=False)
+    lexical = _reject_existing_symlink_components(path, label="retry path")
+
+    try:
+        lexical.relative_to(root)
+    except ValueError as exc:
+        raise RetryError(
+            f"target is outside configured output_root: {lexical}"
+        ) from exc
+    if lexical == root:
+        raise RetryError("retry target cannot be output_root itself")
+
+    resolved = lexical.resolve(strict=False)
     if not is_within(resolved, root):
         raise RetryError(f"target is outside configured output_root: {resolved}")
     if resolved == root:
         raise RetryError("retry target cannot be output_root itself")
-
-    relative = resolved.relative_to(root)
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise RetryError(f"retry path contains symlink component: {current}")
 
 
 def _target_path(
@@ -168,8 +207,6 @@ def _target_path(
         raise RetryError("intended_result_path is missing")
 
     target = Path(raw).expanduser()
-    if target.is_symlink():
-        raise RetryError(f"retry target is a symlink: {target}")
     _reject_symlink_components(target, config.output_root)
     resolved = target.resolve(strict=False)
 
@@ -215,9 +252,9 @@ def _validate_ocr_profile(
     if isinstance(stored_size, bool) or not isinstance(stored_size, int) or stored_size < 0:
         raise RetryError("OCR pipeline size provenance is invalid")
 
-    pipeline_path = Path(raw_pipeline).expanduser()
-    if pipeline_path.is_symlink():
-        raise RetryError(f"OCR pipeline path is now a symlink: {pipeline_path}")
+    pipeline_path = _reject_existing_symlink_components(
+        Path(raw_pipeline), label="OCR pipeline path"
+    )
     try:
         pipeline_path = pipeline_path.resolve(strict=True)
     except FileNotFoundError as exc:
@@ -338,8 +375,6 @@ def _validate_searchable_profile(
     images_dir = Path(raw_images).expanduser()
     json_dir = Path(raw_json).expanduser()
     for label, path in (("images_dir", images_dir), ("ocr_json_dir", json_dir)):
-        if path.is_symlink():
-            raise RetryError(f"{label} is a symlink: {path}")
         _reject_symlink_components(path, config.output_root)
         resolved = path.resolve(strict=True)
         if not resolved.is_dir():
@@ -399,6 +434,7 @@ def _candidate_from_row(
         if stage not in SUPPORTED_RETRY_STAGES:
             raise RetryError(f"unsupported retry stage: {stage!r}")
         source = _source_path(row)
+        _validate_source_scope(source, config)
         target = _target_path(row, config, overwrite=overwrite)
         intended = target
         profile = _decode_profile(profile_json)
@@ -498,6 +534,7 @@ def _current_record_matches(candidate: RetryCandidate, store: ManifestStore) -> 
     if record.execution_profile_json != candidate.execution_profile_json:
         raise RetryError("manifest execution profile changed after retry planning")
 
+    _reject_existing_symlink_components(candidate.source, label="source path")
     stat = candidate.source.stat()
     if stat.st_size != record.source_size or stat.st_mtime_ns != record.source_mtime_ns:
         raise RetryError("source changed after retry planning")
@@ -537,10 +574,9 @@ def execute_retry_plan(
             # Revalidate the manifest row and filesystem just before acting.
             with ManifestStore(config.manifest_path) as store:
                 _current_record_matches(candidate, store)
+            _validate_source_scope(candidate.source, config)
 
-            # A target may have appeared after dry-run/planning.
-            if target.is_symlink():
-                raise RetryError(f"retry target became a symlink: {target}")
+            # A target or symlink component may have appeared after planning.
             _reject_symlink_components(target, config.output_root)
             if target.exists() and not plan.overwrite:
                 raise RetryError(
