@@ -1,0 +1,49 @@
+# Minimal General OCR pipeline used by the public CPU smoke test.
+#
+# It deliberately disables optional preprocessing/orientation modules at
+# initialization time so CI validates the core detection+recognition path
+# without downloading models that the smoke does not use.
+pipeline_name: OCR
+text_type: general
+use_doc_preprocessor: False
+use_textline_orientation: False
+
+SubPipelines:
+  DocPreprocessor:
+    pipeline_name: doc_preprocessor
+    use_doc_orientation_classify: False
+    use_doc_unwarping: False
+    SubModules:
+      DocOrientationClassify:
+        module_name: doc_text_orientation
+        model_name: PP-LCNet_x1_0_doc_ori
+        model_dir: null
+      DocUnwarping:
+        module_name: image_unwarping
+        model_name: UVDoc
+        model_dir: null
+
+SubModules:
+  TextDetection:
+    module_name: text_detection
+    model_name: PP-OCRv6_small_det
+    model_dir: null
+    limit_side_len: 64
+    limit_type: min
+    max_side_limit: 4000
+    thresh: 0.3
+    box_thresh: 0.6
+    unclip_ratio: 1.5
+
+  TextLineOrientation:
+    module_name: textline_orientation
+    model_name: PP-LCNet_x1_0_textline_ori
+    model_dir: null
+    batch_size: 1
+
+  TextRecognition:
+    module_name: text_recognition
+    model_name: PP-OCRv6_small_rec
+    model_dir: null
+    batch_size: 1
+    score_thresh: 0.0
