@@ -60,8 +60,62 @@ def result_mapping(result: object) -> Mapping[str, object]:
     return _unwrap_result_mapping(data)
 
 
+def _json_safe(value: object, *, path: str = "result") -> object:
+    """Convert PaddleX/NumPy values to ordinary JSON-compatible Python values.
+
+    PaddleX's in-memory Result mapping intentionally contains NumPy arrays and
+    NumPy scalar values. Its own ``save_to_json()`` converts those values before
+    serialization. This project validates and atomically publishes the result
+    itself, so perform the same conversion without importing NumPy into the core
+    package. Unknown values fail explicitly instead of being silently stringified.
+    """
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        converted: Dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise PaddleXResultError(
+                    f"{path} contains non-string mapping key {key!r}"
+                )
+            converted[key] = _json_safe(item, path=f"{path}.{key}")
+        return converted
+    if isinstance(value, (list, tuple)):
+        return [
+            _json_safe(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _json_safe(tolist(), path=path)
+        except Exception as exc:
+            if isinstance(exc, PaddleXResultError):
+                raise
+            raise PaddleXResultError(
+                f"cannot convert array-like value at {path} to JSON-safe data"
+            ) from exc
+
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item(), path=path)
+        except Exception as exc:
+            if isinstance(exc, PaddleXResultError):
+                raise
+            raise PaddleXResultError(
+                f"cannot convert scalar-like value at {path} to JSON-safe data"
+            ) from exc
+
+    raise PaddleXResultError(
+        f"unsupported PaddleX result value at {path}: {type(value).__name__}"
+    )
+
+
 def normalize_ocr_result(result: object) -> Dict[str, object]:
-    """Validate a Result object and return its stable JSON mapping."""
+    """Validate a Result object and return a JSON-safe stable mapping."""
 
     mapping = result_mapping(result)
     try:
@@ -69,7 +123,10 @@ def normalize_ocr_result(result: object) -> Dict[str, object]:
     except OcrSchemaError as exc:
         raise PaddleXResultError(f"PaddleX OCR result violates the OCR schema: {exc}") from exc
 
-    normalized: Dict[str, object] = dict(mapping)
+    converted = _json_safe(mapping)
+    if not isinstance(converted, dict):
+        raise PaddleXResultError("normalized PaddleX OCR result is not a mapping")
+    normalized: Dict[str, object] = converted
     normalized["_paddle_batch_ocr"] = {
         "schema": 1,
         "polygon_field": page.polygon_field,
@@ -131,7 +188,7 @@ def create_ocr_pipeline(
             from paddlex import create_pipeline as create_pipeline_fn  # type: ignore
         except ImportError as exc:
             raise PaddleXDependencyError(
-                "OCR execution requires PaddleX; install PaddlePaddle first and then paddlex[ocr]"
+                "OCR execution requires PaddleX; install PaddlePaddle first and then paddle-batch-ocr[ocr]"
             ) from exc
 
     kwargs = create_pipeline_kwargs(
