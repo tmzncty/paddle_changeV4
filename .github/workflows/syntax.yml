@@ -1,4 +1,4 @@
-name: Python syntax check
+name: Python baseline checks
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  compile:
+  baseline:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -26,9 +26,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Compile legacy Python files
+      - name: Compile Python files
         run: |
           python -m py_compile \
+            find_json_parent.py \
             del_10min_cache.py \
             highocr3_f2.py \
             highocr3_f2_pdf.py \
@@ -40,3 +41,6 @@ jobs:
             pdf_searchable2.5.py \
             pdf_searchable3.py \
             pdf_to_png.py
+
+      - name: Run dependency-free unit tests
+        run: python -m unittest discover -s tests -v
