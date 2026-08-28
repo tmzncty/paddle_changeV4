@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - refactor/**
   pull_request:
 
 permissions:
@@ -18,36 +17,24 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Compile Python files
         run: |
           python -m compileall -q src tests tests_pdf
           python -m py_compile \
-            find_json_parent.py \
-            del_10min_cache.py \
-            highocr3_f2.py \
-            highocr3_f2_pdf.py \
-            highocr3_f2_pdf2.py \
-            highocr4_f1_pdf_img.py \
-            pdf_creator_with_text_layer5.py \
-            pdf_creator_with_text_layer6.py \
-            pdf_creator_with_text_layer7.py \
-            pdf_searchable2.5.py \
-            pdf_searchable3.py \
-            pdf_to_png.py
-
+            find_json_parent.py del_10min_cache.py highocr3_f2.py \
+            highocr3_f2_pdf.py highocr3_f2_pdf2.py highocr4_f1_pdf_img.py \
+            pdf_creator_with_text_layer5.py pdf_creator_with_text_layer6.py \
+            pdf_creator_with_text_layer7.py pdf_searchable2.5.py \
+            pdf_searchable3.py pdf_to_png.py
       - name: Run dependency-free unit tests
         run: python -m unittest discover -s tests -v
-
       - name: Verify package metadata and CLI
         run: |
           python -m pip install --no-deps .
@@ -57,25 +44,24 @@ jobs:
           paddle-batch-ocr render --help
           paddle-batch-ocr searchable-pdf --help
           paddle-batch-ocr ocr --help
+          paddle-batch-ocr run --help
 
   pdf-smoke:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install PDF execution dependencies
         run: python -m pip install '.[pdf]'
-
       - name: Run real PDF execution tests
         run: python -m unittest discover -s tests_pdf -v
 
@@ -84,46 +70,43 @@ jobs:
     timeout-minutes: 30
     env:
       PADDLE_PDX_MODEL_SOURCE: BOS
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-
-      # PaddlePaddle 3.3.0 currently has a known CPU oneDNN/PIR regression
-      # (Paddle #77340 / PaddleX #4970). 3.2.2 is the upstream-documented
-      # workaround until that framework regression is fixed.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Restore PaddleX OCR models
+        uses: actions/cache@v6
+        with:
+          path: ~/.paddlex/official_models
+          key: paddlex-ocr-${{ runner.os }}-py312-${{ hashFiles('configs/paddlex/ocr-ci-small.yaml') }}
+          restore-keys: |
+            paddlex-ocr-${{ runner.os }}-py312-
       - name: Install known-good PaddlePaddle CPU runtime
         run: |
           python -m pip install --upgrade pip
           python -m pip install paddlepaddle==3.2.2 \
             -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-
       - name: Install PaddleX OCR integration
         run: python -m pip install '.[ocr]'
-
       - name: Record installed OCR runtime versions
         run: |
           python - <<'PY'
           import importlib.metadata as metadata
           for name in ("paddlepaddle", "paddlex", "paddleocr"):
-              try:
-                  print(f"{name}={metadata.version(name)}")
-              except metadata.PackageNotFoundError:
-                  print(f"{name}=not-installed")
+              try: print(f"{name}={metadata.version(name)}")
+              except metadata.PackageNotFoundError: print(f"{name}=not-installed")
           PY
-
       - name: Download official PaddleX General OCR demo image
         run: |
           curl --fail --location --retry 3 \
             https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_ocr_001.png \
             --output /tmp/general_ocr_001.png
           test -s /tmp/general_ocr_001.png
-
       - name: Run real PaddleX OCR through project CLI
         run: |
           set +e
@@ -136,7 +119,6 @@ jobs:
           set -e
           cat /tmp/ocr-summary.json
           exit "$ocr_rc"
-
       - name: Validate produced OCR JSON through project schema
         env:
           PYTHONPATH: src:.
@@ -145,18 +127,15 @@ jobs:
           import json
           from pathlib import Path
           from paddle_batch_ocr.ocr_schema import parse_ocr_page
-
           summary = json.loads(Path("/tmp/ocr-summary.json").read_text(encoding="utf-8"))
           assert summary["success"] == 1, summary
           assert summary["failed"] == 0, summary
-
           output = Path("/tmp/ocr-json/general_ocr_001_result.json")
           assert output.is_file(), output
-          payload = json.loads(output.read_text(encoding="utf-8"))
-          page = parse_ocr_page(payload)
-          assert len(page.lines) > 0, "real OCR returned no recognized lines"
-          assert page.text_field == "rec_texts", page.text_field
-          assert page.polygon_field in {"rec_polys", "dt_polys"}, page.polygon_field
+          payload = json.loads(output.read_text(encoding="utf-8")); page = parse_ocr_page(payload)
+          assert len(page.lines) > 0
+          assert page.text_field == "rec_texts"
+          assert page.polygon_field in {"rec_polys", "dt_polys"}
           assert payload.get("_paddle_batch_ocr", {}).get("schema") == 1
           print(f"recognized_lines={len(page.lines)}")
           print(f"polygon_field={page.polygon_field}")
