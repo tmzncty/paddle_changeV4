@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -78,10 +79,49 @@ def _validate_unique_outputs(tasks: List[OcrTask]) -> None:
         owners[key] = task.source
 
 
-def _pipeline_profile_value(pipeline_ref: PipelineRef) -> str:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pipeline_profile_value(pipeline_ref: PipelineRef) -> Dict[str, object]:
+    """Describe a named pipeline or fingerprint a local pipeline config file."""
+
     if isinstance(pipeline_ref, os.PathLike):
-        return os.fspath(Path(pipeline_ref).expanduser().resolve(strict=False))
-    return str(pipeline_ref)
+        raw = os.fspath(pipeline_ref)
+        candidate = Path(raw).expanduser()
+        must_be_file = True
+    else:
+        raw = str(pipeline_ref)
+        candidate = Path(raw).expanduser()
+        must_be_file = False
+
+    if must_be_file or candidate.is_file():
+        try:
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise OcrRunnerError(
+                f"local PaddleX pipeline config does not exist: {candidate}"
+            ) from exc
+        if not resolved.is_file():
+            raise OcrRunnerError(
+                f"local PaddleX pipeline config is not a file: {resolved}"
+            )
+        stat = resolved.stat()
+        return {
+            "type": "file",
+            "path": os.fspath(resolved),
+            "size": stat.st_size,
+            "sha256": _sha256_file(resolved),
+        }
+
+    return {
+        "type": "name",
+        "value": raw,
+    }
 
 
 def build_ocr_execution_profile(
@@ -95,9 +135,9 @@ def build_ocr_execution_profile(
     """Return result-affecting OCR settings in a stable JSON-compatible form."""
 
     return {
-        "schema": 1,
+        "schema": 2,
         "kind": "paddlex_ocr",
-        "pipeline_ref": _pipeline_profile_value(pipeline_ref),
+        "pipeline": _pipeline_profile_value(pipeline_ref),
         "device": device or "auto",
         "engine": engine,
         "use_hpip": use_hpip,
@@ -369,7 +409,13 @@ def run_ocr_batch(
             except Exception as exc:
                 if store is not None:
                     try:
-                        store.mark_failure(task.source, "ocr", exc)
+                        store.mark_failure(
+                            task.source,
+                            "ocr",
+                            exc,
+                            intended_result_path=task.output_json,
+                            execution_profile=execution_profile,
+                        )
                     except Exception:
                         pass
                 results.append(
