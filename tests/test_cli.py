@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 
 from paddle_batch_ocr.cli import main
+from paddle_batch_ocr.config import load_config
+from paddle_batch_ocr.manifest import ManifestStore
 
 
 class CliTests(unittest.TestCase):
@@ -61,6 +63,46 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(marker.exists())
             self.assertIn("dry-run", output.getvalue())
+
+    def test_manifest_status_does_not_create_missing_database(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = self._write_config(root)
+            config = load_config(config_path)
+            self.assertFalse(config.manifest_path.exists())
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = main(["manifest", "status", "--config", str(config_path), "--json"])
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(output.getvalue())
+            self.assertFalse(payload["exists"])
+            self.assertEqual(payload["total"], 0)
+            self.assertFalse(config.manifest_path.exists())
+
+    def test_manifest_status_reports_persisted_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = self._write_config(root)
+            config = load_config(config_path)
+            source = root / "images" / "a.png"
+            result = root / "work" / "output" / "a.json"
+            result.parent.mkdir(parents=True)
+            result.write_text("{}", encoding="utf-8")
+
+            with ManifestStore(config.manifest_path) as store:
+                store.mark_success(source, "ocr", result_path=result)
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = main(["manifest", "status", "--config", str(config_path), "--json"])
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(output.getvalue())
+            self.assertTrue(payload["exists"])
+            self.assertEqual(payload["status"], {"success": 1})
+            self.assertEqual(payload["total"], 1)
 
 
 if __name__ == "__main__":
