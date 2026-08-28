@@ -20,6 +20,32 @@ def _publish_temp(temp_path: Path, target: Path, *, overwrite: bool) -> None:
         temp_path.unlink()
 
 
+def atomic_publish_file(
+    temp_path: Path,
+    target_path: Path,
+    *,
+    overwrite: bool = False,
+    fsync: bool = True,
+) -> Path:
+    """Publish an already-written same-directory file atomically."""
+
+    temp = Path(temp_path).expanduser().resolve(strict=True)
+    target = Path(target_path).expanduser().resolve(strict=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if temp.parent != target.parent:
+        raise ValueError("atomic publication requires temp file and target to share a directory")
+    if not temp.is_file():
+        raise ValueError(f"temporary publication source is not a file: {temp}")
+
+    if fsync:
+        with temp.open("rb") as handle:
+            os.fsync(handle.fileno())
+
+    _publish_temp(temp, target, overwrite=overwrite)
+    return target
+
+
 def atomic_write_bytes(
     path: Path,
     data: bytes,
