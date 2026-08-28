@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Dict, List
+from typing import Dict
 
 from .config import load_config
 from .retry import (
@@ -78,9 +78,22 @@ def _execution_payload(result: RetryExecutionResult) -> Dict[str, object]:
     }
 
 
+def _validate_cli_window(args: argparse.Namespace) -> None:
+    if isinstance(args.limit, bool) or not isinstance(args.limit, int) or not 1 <= args.limit <= 10000:
+        raise ValueError("limit must be an integer between 1 and 10000")
+    if isinstance(args.offset, bool) or not isinstance(args.offset, int) or args.offset < 0:
+        raise ValueError("offset must be an integer >= 0")
+
+
 def command_manifest_retry_failed(args: argparse.Namespace) -> int:
     try:
+        _validate_cli_window(args)
         config = load_config(args.config)
+        if config.manifest_path.is_symlink():
+            raise ValueError(
+                f"refusing symlinked manifest database: {config.manifest_path}"
+            )
+
         plan = plan_failed_retries(
             config,
             stage=args.stage,
