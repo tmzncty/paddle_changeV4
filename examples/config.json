@@ -1,0 +1,20 @@
+{
+  "input_sources": [
+    {"path": "./input-pdfs", "type": "pdf"},
+    {"path": "./input-images", "type": "image"}
+  ],
+  "output_root": "./work/output",
+  "log_dir": "./work/logs",
+  "cache_root": "./work/cache",
+  "paddle_config": "./OCR2.yaml",
+  "runtime": {
+    "device": "auto",
+    "ocr_workers": 1,
+    "pdf_prep_workers": 1,
+    "render_workers": 1,
+    "batch_size": 1
+  },
+  "delete_temp_images": false,
+  "overwrite": false,
+  "resume": true
+}
