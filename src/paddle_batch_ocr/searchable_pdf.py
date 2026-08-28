@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import tempfile
 from dataclasses import dataclass
@@ -47,7 +46,12 @@ def _require_pdf_dependencies():
 
 
 def discover_numbered_page_images(image_dir: Path) -> Tuple[Path, ...]:
-    """Discover one image for each ``page_<number>`` in numeric page order."""
+    """Discover a complete ``page_00001..N`` image sequence in numeric order.
+
+    The public execution path is intentionally stricter than the legacy script:
+    duplicate page numbers, page zero, or gaps are errors instead of silently
+    emitting a shorter PDF.
+    """
 
     root = Path(image_dir).expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -61,6 +65,8 @@ def discover_numbered_page_images(image_dir: Path) -> Tuple[Path, ...]:
         if not match:
             continue
         page_number = int(match.group(1))
+        if page_number < 1:
+            raise SearchablePdfError(f"page numbers must start at 1: {path.name}")
         previous = by_page.get(page_number)
         if previous is not None:
             raise SearchablePdfError(
@@ -71,7 +77,16 @@ def discover_numbered_page_images(image_dir: Path) -> Tuple[Path, ...]:
     if not by_page:
         raise SearchablePdfError(f"no page_<number> images found in {root}")
 
-    return tuple(by_page[number] for number in sorted(by_page))
+    last_page = max(by_page)
+    missing = [number for number in range(1, last_page + 1) if number not in by_page]
+    if missing:
+        preview = ", ".join(str(number) for number in missing[:10])
+        suffix = "..." if len(missing) > 10 else ""
+        raise SearchablePdfError(
+            f"page image sequence has gaps; missing page(s): {preview}{suffix}"
+        )
+
+    return tuple(by_page[number] for number in range(1, last_page + 1))
 
 
 def _load_ocr_json(path: Path) -> Mapping[str, object]:
@@ -141,6 +156,8 @@ def build_searchable_pdf(
             page.insert_image(page.rect, filename=str(image_path))
 
             for line in order_two_columns(ocr_page.lines, page_width=width):
+                if not line.text.strip():
+                    continue
                 legacy_rect = legacy_text_rect(line, y_offset=y_offset)
                 if legacy_rect.width <= 0 or legacy_rect.height <= 0:
                     raise SearchablePdfError(
