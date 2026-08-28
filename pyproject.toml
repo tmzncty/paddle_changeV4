@@ -27,6 +27,11 @@ yaml = ["PyYAML>=6"]
 # Python-3.9-compatible releases remain inside these ranges. pip therefore
 # resolves a compatible version on 3.9 without forcing the core package off 3.9.
 pdf = ["PyMuPDF>=1.26,<2", "Pillow>=11,<13"]
+# PaddlePaddle itself is deliberately NOT included here. CPU/GPU PaddlePaddle
+# wheels come from hardware-specific official indexes and must be installed
+# explicitly before this extra. The extra only supplies the current PaddleX OCR
+# stack around the already-selected PaddlePaddle runtime.
+ocr = ["paddlex[ocr]>=3.7,<4"]
 
 [project.scripts]
 paddle-batch-ocr = "paddle_batch_ocr.cli:main"
