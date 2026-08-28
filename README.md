@@ -1,32 +1,44 @@
 # paddle_changeV4
 
-面向**大规模中文 OCR、PDF 批处理与可搜索 PDF 重建**的 PaddleOCR / PaddleX 流水线实验项目。
+面向**大规模中文 OCR、PDF 批处理与可搜索 PDF 重建**的 PaddleOCR / PaddleX 流水线项目。
 
-> 当前仓库正在从“长期迭代的个人脚本集合”重构为可复现、可配置、可测试的公开项目。历史脚本继续保留以保存已经验证过的处理经验；新的安全层、配置系统、manifest、PDF execution layer 和 CLI 已经落在 `src/paddle_batch_ocr/`。
+> 这个仓库最初是一组在真实大批量文献数字化任务中长期迭代的个人脚本。现在正在把已经验证过的处理经验逐步收束为可安装、可配置、可测试、默认安全的公开工具；历史脚本继续保留，直到新实现有足够的行为基线和真实数据验证后再归档。
 
-## 项目要解决什么
+## 项目定位
 
-这个项目最初服务于几十万页规模的文献数字化处理，重点不是单张图片 OCR，而是把完整工作流跑稳定：
+这不是 PaddlePaddle 核心代码的修改版。项目关注的是 PaddleX / PaddleOCR **上层批处理与文档工作流**：
 
-1. 批量扫描 PDF / 图片目录；
-2. 将 PDF 页面渲染为图像；
-3. 使用 PaddleX / PaddleOCR 执行 OCR；
-4. 保存逐页 JSON 结果；
-5. 根据 OCR 坐标重建带隐藏文本层的 searchable PDF；
-6. 在大量文件、长时间运行、GPU / CPU / 内存 / 磁盘 I/O 同时受压时支持跳过、错误留档和恢复。
+1. 扫描 PDF / 图片目录；
+2. PDF 页面事务式渲染；
+3. 执行 PaddleX OCR；
+4. 原子保存逐页 OCR JSON；
+5. 从 OCR 坐标重建 searchable PDF；
+6. 为长时间、大规模任务提供 resume、manifest、错误隔离和安全边界。
 
-现有 legacy 代码来自真实的大批量处理环境，因此包含很多关于吞吐量、缓存、并发、异常页和中文深层路径的经验。但其中不少机器参数曾直接硬编码在源码里，**不能视为通用安全默认值**。
+根目录的 legacy 脚本保存了过去几十万页级任务中的吞吐量、缓存、并发和异常页处理经验，但其中仍有机器专属路径和激进并发值，**不能视为公开项目的安全默认配置**。
 
 ## 当前状态
 
-**Status: legacy OCR preserved / public PDF execution active**
+**Status: public PDF execution + serial PaddleX OCR execution active**
 
-现在仓库同时存在两层：
+当前仓库同时存在两层：
 
-- `src/paddle_batch_ocr/`：新的可安装 package、安全配置、诊断、manifest、PDF execution 和 CLI；
-- 根目录历史 `.py`：尚未完全迁移的 PaddleX/PaddleOCR 推理与旧 PDF 实现。
+- `src/paddle_batch_ocr/`：新的 package、安全层、配置、diagnostics、manifest、PDF execution、serial OCR execution 和统一 CLI；
+- 根目录历史 `.py`：legacy 参考实现，暂不删除。
 
-### 安装
+已经真实验证的主链路包括：
+
+```text
+PDF -> PNG pages
+image -> PaddleX OCR -> atomic JSON
+PNG + OCR JSON -> searchable PDF
+```
+
+OCR 当前故意保持**串行**：一个进程惰性初始化一个 PaddleX pipeline，并在整批图片上复用。多进程 worker lifecycle 是下一阶段，不在尚未验证时假装支持。
+
+## 安装
+
+### 核心工具
 
 核心 package 不强制安装 Paddle/CUDA：
 
@@ -36,290 +48,231 @@ paddle-batch-ocr --version
 paddle-batch-ocr doctor
 ```
 
-如果要使用 PDF 拆页和 searchable-PDF 重建：
+### PDF 功能
 
 ```bash
 python -m pip install '.[pdf]'
 ```
 
-YAML 项目配置是另一个可选 extra：
+### YAML 项目配置
 
 ```bash
 python -m pip install '.[yaml]'
 ```
 
-### 已经可用的新 CLI
+### OCR 功能
+
+项目的 `ocr` extra 只安装 PaddleX OCR core，不替你选择 CPU/GPU PaddlePaddle wheel：
 
 ```bash
-# 无配置也能检查当前机器
+# 先按 PaddlePaddle 官方方式安装与你硬件匹配的 runtime
+python -m pip install '.[ocr]'
+```
+
+`.[ocr]` 当前约束为 `paddlex[ocr-core]>=3.7,<3.8`。PaddlePaddle 本身刻意不写进统一 dependency，因为 CPU / CUDA wheel 来自不同官方索引和硬件组合。
+
+当前公共 CPU smoke 的已验证组合：
+
+| Component | Version / model |
+| --- | --- |
+| Python | 3.12.14 |
+| PaddlePaddle CPU | 3.2.2 |
+| PaddleX | 3.7.2 |
+| Text detection | PP-OCRv6_small_det |
+| Text recognition | PP-OCRv6_small_rec |
+| Runner | Ubuntu 24.04 GitHub Actions |
+
+PaddlePaddle 3.3.0 在当前 CPU oneDNN/PIR 路径存在已知上游回归；项目 CI 暂时使用 3.2.2 作为上游 issue 给出的 workaround。详见 [`docs/OCR_EXECUTION.md`](docs/OCR_EXECUTION.md)。GPU 仍需要独立 self-hosted/manual 验证。
+
+## CLI
+
+### Diagnostics / manifest / cache
+
+```bash
 paddle-batch-ocr doctor
 paddle-batch-ocr doctor --json
-
-# 带项目配置检查输入、磁盘、Paddle 配置等
 paddle-batch-ocr doctor --config examples/config.json
 
-# OCR 前只扫描并统计输入，不执行模型
 paddle-batch-ocr scan --config examples/config.json
 
-# 查看 SQLite manifest 状态；如果 manifest 不存在，不会创建空数据库
 paddle-batch-ocr manifest status --config examples/config.json
 paddle-batch-ocr manifest status --config examples/config.json --json
 
-# 默认 dry-run：只告诉你准备清理哪个 temp cache
+# 默认 dry-run
 paddle-batch-ocr cache clean --config examples/config.json
 
-# 只有显式给出 --execute 才真正删除 <cache_root>/temp
+# 只有显式 --execute 才删除 <cache_root>/temp
 paddle-batch-ocr cache clean --config examples/config.json --execute
+```
 
-# 事务式 PDF -> PNG 页面目录
+### PDF -> PNG
+
+```bash
 paddle-batch-ocr render input.pdf --output pages/
-
-# 可指定 DPI；已有输出默认拒绝覆盖
 paddle-batch-ocr render input.pdf --output pages/ --dpi 144
+```
 
-# OCR JSON + 页面图 -> searchable PDF
+`render` 先写 sibling staging directory，整本成功后才发布最终目录；默认拒绝覆盖已有输出。
+
+### PaddleX OCR
+
+单图：
+
+```bash
+paddle-batch-ocr ocr page.png \
+  --output json/ \
+  --device cpu
+```
+
+递归图片目录：
+
+```bash
+paddle-batch-ocr ocr images/ \
+  --output json/ \
+  --device gpu:0
+```
+
+指定本地 PaddleX pipeline YAML：
+
+```bash
+paddle-batch-ocr ocr images/ \
+  --output json/ \
+  --pipeline ./OCR.yaml
+```
+
+接入 manifest：
+
+```bash
+paddle-batch-ocr ocr images/ \
+  --output json/ \
+  --manifest work/manifest.sqlite3
+```
+
+`--json` 会把项目 summary 保持为严格机器可读 stdout。Paddle / oneDNN 的 Python 日志以及直接写 OS fd 1 的原生日志会在 OCR 执行期间被临时路由到 stderr，执行结束后恢复 stdout，再输出唯一 JSON summary。
+
+当前 serial OCR contract：
+
+- 一个 pipeline 惰性初始化并复用；
+- 已有合法 JSON 在 resume 时可直接采用，不必加载模型；
+- source size/mtime 变化会使 manifest 中旧结果失效；
+- JSON 先验证 schema，再同目录临时写入 + fsync + atomic publish；
+- 默认不覆盖；
+- 单图失败不阻断后续图片；
+- 任一任务失败时 CLI 返回非零；
+- symlinked input/output/manifest 边界会被拒绝。
+
+### searchable PDF
+
+```bash
 paddle-batch-ocr searchable-pdf \
   --images pages/ \
   --ocr-json json/ \
   --output book_searchable.pdf
 ```
 
-`render` 与 `searchable-pdf` 支持 `--json` 输出，便于后续 orchestration / agent 调用。
+公开实现要求完整页序列、每页 OCR JSON 都存在，并在最终 PDF 发布前完成整本构建。详细说明见 [`docs/PDF_EXECUTION.md`](docs/PDF_EXECUTION.md)。
 
-`doctor` 会尽量报告：
+## OCR Result 兼容
 
-- Python / 平台；
-- CPU 数量与物理内存；
-- Paddle / Paddle GPU / PaddleX / PaddleOCR / PyMuPDF / Pillow 安装版本；
-- `nvidia-smi` 可见 GPU、显存和驱动；
-- output / log / cache 对应磁盘剩余空间；
-- 输入或 Paddle 配置缺失；
-- 明显过高的 worker / batch 参数。
+新的 adapter 同时覆盖历史和当前 PaddleX 输出：
 
-## PDF execution layer
+- 当前 PaddleX：优先官方 Result `.json` 导出合同；
+- 当前 geometry：`rec_polys + rec_texts`；
+- 历史兼容：`dt_polys + rec_texts`；
+- 更早历史兼容：`dt_polys + rec_text`；
+- NumPy ndarray / scalar 在 package 边界转换成普通 JSON 值；
+- 不把 `vis_fonts`、原始图像等 PaddleX runtime visualization 对象误写进稳定 OCR JSON；
+- 每份新 JSON 增加 `_paddle_batch_ocr` provenance metadata。
 
-新的 PDF 执行层不依赖 Paddle/CUDA，可以独立测试。
+优先 `rec_polys` 很重要：当前 OCR pipeline 在 recognition score 过滤后，`dt_polys` 与最终识别文本数量可能不再一一对应。
 
-### `render`
+## 项目配置与安全默认值
 
-- 所有页面先渲染到隐藏 sibling staging 目录；
-- 全部页面成功后，最终输出目录才出现；
-- 页文件名稳定为 `page_00001.png`、`page_00002.png`……；
-- output 已存在时默认报错；
-- `--overwrite` 使用 backup / replace / rollback 路径，而不是先删旧目录；
-- DPI 限制在 36–1200。
-
-### `searchable-pdf`
-
-公开执行路径比 legacy 脚本更严格：
-
-- 页面图必须构成完整 `page_00001..N` 序列；
-- page 0、重复页码、序列缺页都是错误；
-- 每页必须找到对应 OCR JSON，否则整本失败，不静默生成残缺 PDF；
-- 同时支持历史 `rec_text` 与较新 `rec_texts`；
-- 保留历史 JSON 文件名匹配优先级；
-- polygon/text 数量与坐标结构必须合法；
-- 当前文本排序和 geometry 使用已冻结的 `pdf_creator_with_text_layer7.py` 兼容规则；
-- 最终 PDF 先写 sibling 临时文件，再原子发布；
-- 默认不覆盖已有 PDF。
-
-详细说明见 [`docs/PDF_EXECUTION.md`](docs/PDF_EXECUTION.md)。
-
-## 项目配置
-
-推荐从 [`examples/config.json`](examples/config.json) 开始：
-
-```json
-{
-  "input_sources": [
-    {"path": "./input-pdfs", "type": "pdf"},
-    {"path": "./input-images", "type": "image"}
-  ],
-  "output_root": "./work/output",
-  "log_dir": "./work/logs",
-  "cache_root": "./work/cache",
-  "paddle_config": "./OCR2.yaml",
-  "runtime": {
-    "device": "auto",
-    "ocr_workers": 1,
-    "pdf_prep_workers": 1,
-    "render_workers": 1,
-    "batch_size": 1
-  },
-  "delete_temp_images": false,
-  "overwrite": false,
-  "resume": true
-}
-```
-
-配置中的相对路径以**配置文件所在目录**为基准解析。若未指定 `manifest_path`，默认使用：
-
-```text
-<log_dir>/manifest.sqlite3
-```
+推荐从 [`examples/config.json`](examples/config.json) 开始。
 
 新的默认原则是保守而不是追求 benchmark：
 
-- worker 默认都是 `1`；
+- worker 默认 `1`；
 - batch size 默认 `1`；
 - `overwrite=false`；
 - cache 删除默认 dry-run；
-- output / log / cache / manifest 不允许位于输入目录内部；
-- output 与 cache 不允许互相嵌套；
-- log 与 cache 不允许重叠；
-- manifest 不允许放进 cache root；
+- output / log / cache / manifest 不允许危险重叠；
 - cache root 不能是 filesystem root、用户 home 或当前工作目录；
-- destructive path 必须先经过真实路径 containment 检查。
+- destructive path 使用 realpath containment；
+- cache temp symlink 直接拒绝；
+- manifest symlink 在 SQLite 打开前拒绝。
 
-## Manifest 与恢复
+这些保护**不自动覆盖根目录 legacy 脚本**。不要直接把 legacy 中的 `/media/tmzn/...` 路径、高并发和 cache cleanup 当成通用默认设置。
 
-新的 manifest 使用 Python 标准库 SQLite，以 `(source_path, stage)` 为键记录任务状态。当前核心能力包括：
+## Manifest / resume
+
+SQLite manifest 以 `(source_path, stage)` 为任务键，当前记录：
 
 - source size / mtime fingerprint；
-- `pending / running / success / failed` 状态；
+- `pending / running / success / failed`；
 - result path；
 - retry count；
 - error class / message；
 - worker / device；
-- started / finished 时间与 duration；
-- WAL + busy timeout，允许多个 worker 各自打开连接；
-- 并发首次登记使用幂等 insert；
-- 已成功任务的结果文件消失时重新运行；
-- 源文件 size/mtime 变化时自动把旧 success 失效为 pending。
+- started / finished / duration；
+- WAL + busy timeout。
 
-这比 legacy 的“目标文件存在就跳过”更适合长时间、几十万页级任务。下一步会把 render / OCR / searchable-PDF 的实际执行状态接入 manifest。
+OCR serial execution 已接入 manifest 的 adoption / stale-result 语义；完整 `run` orchestration 与所有 PDF stage 的统一 manifest 生命周期仍在 roadmap。
 
-## OCR JSON / searchable-PDF 兼容层
+## CI
 
-重构已经把几条历史隐含协议变成了独立模块和测试：
+当前公共 CI 分层：
 
-- `paddle_batch_ocr.naming` 保存 v7 的多种 page JSON 文件名匹配优先级；
-- `paddle_batch_ocr.ocr_schema` 同时接受历史 `rec_text` 与较新 `rec_texts`；
-- `paddle_batch_ocr.layout` 冻结 v7 的两栏排序和 polygon 0/2 点文本矩形行为；
-- `paddle_batch_ocr.io_utils` 提供同目录 temp + fsync + 原子发布 primitive；
-- `paddle_batch_ocr.searchable_pdf` 已经真正使用这些兼容层生成 searchable PDF。
+1. Python 3.9 / 3.12 dependency-free compile + unit tests；
+2. package install + CLI smoke；
+3. Python 3.9 / 3.12 real PDF execution smoke；
+4. Python 3.12 real PaddleX CPU OCR smoke。
 
-详细 legacy 行为见 [`docs/LEGACY_BEHAVIOR.md`](docs/LEGACY_BEHAVIOR.md)。
-
-## 尚未迁移的新功能
-
-新的 CLI 目前**还不会执行 PaddleX/PaddleOCR 推理**。以下命令仍属于 roadmap：
+CPU OCR smoke 会真实：
 
 ```text
-paddle-batch-ocr ocr --config CONFIG
-paddle-batch-ocr run --config CONFIG
+install PaddlePaddle 3.2.2 CPU
+install paddlex[ocr-core] 3.7.x
+download official PaddleX demo image
+download PP-OCRv6 small det/rec
+run paddle-batch-ocr ocr --json
+parse the summary as strict JSON
+open the produced OCR JSON
+parse it again through paddle_batch_ocr.ocr_schema
+assert recognized lines > 0
 ```
 
-render 与 searchable-PDF 已经进入新的 execution layer；OCR engine 仍然保留 legacy 参考实现，直到 CPU smoke、PaddleX result adapter 和 worker lifecycle 被测试覆盖。
+因此当前 OCR execution layer 不只是 fake Result / mock pipeline 测试通过，而是已经穿过官方模型的真实 CPU 推理。
 
 ## Legacy 实现索引
 
 | 文件 | 当前用途 | 状态 |
 | --- | --- | --- |
-| `pdf_to_png.py` | PDF 多进程拆图 | legacy / 已有新 `render` replacement |
+| `pdf_to_png.py` | PDF 多进程拆图 | legacy / 新 `render` replacement 已存在 |
 | `highocr3_f2.py` | 图片目录 OCR | legacy |
 | `highocr3_f2_pdf.py` / `highocr3_f2_pdf2.py` | PDF OCR 早期实现 | legacy |
-| `highocr4_f1_pdf_img.py` | PDF / 图片统一批处理 | **当前 OCR 主要参考实现** |
-| `pdf_creator_with_text_layer5.py` / `6.py` / `7.py` | OCR JSON → 带文本层 PDF | legacy / 已有新 `searchable-pdf` execution path |
+| `highocr4_f1_pdf_img.py` | PDF / 图片统一批处理 | legacy / 当前 OCR 主要参考实现 |
+| `pdf_creator_with_text_layer5.py` / `6.py` / `7.py` | OCR JSON -> searchable PDF | legacy / 新 execution path 已存在 |
 | `pdf_searchable2.5.py` / `pdf_searchable3.py` | searchable PDF 实验实现 | legacy |
-| `del_10min_cache.py` | PaddleX 临时缓存维护实验 | legacy / destructive |
-| `OCR.yaml` / `OCR2.yaml` | PaddleX OCR 配置样例 | legacy configuration |
+| `del_10min_cache.py` | PaddleX cache 维护实验 | legacy / destructive |
+| `OCR.yaml` / `OCR2.yaml` | 历史 PaddleX 配置 | legacy configuration |
 
-这些文件名中的数字只是历史迭代痕迹，不代表稳定 API 或正式 release。
+数字文件名只是历史迭代痕迹，不是稳定 API 或 release 版本。
 
-**不要直接运行 legacy 默认配置。** 多个旧脚本仍包含 `/media/tmzn/...` 的机器路径、高并发参数以及递归缓存处理。
+## 第三方许可证
 
-## 安全边界
+仓库本身使用 **GNU GPL-3.0**。PDF optional extra 使用 PyMuPDF 与 Pillow；PyMuPDF 当前上游采用 GNU AGPL / commercial 双许可边界，分发组合应用时请自行核对相应义务。
 
-新实现把安全问题当成程序语义，而不是 README 警告：
+## 下一阶段
 
-- cache cleanup 只允许作用于配置的 `<cache_root>/temp`；
-- cache root 本身不会被递归删除；
-- `/`、用户 home、当前工作目录等受保护路径会被拒绝；
-- containment 使用真实路径关系，不使用字符串前缀，因此 `/data/cache-evil` 不会被误认为 `/data/cache` 的子目录；
-- symlink 解析后越界会被拒绝，cache temp symlink 也会直接拒绝；
-- 删除默认 dry-run，必须显式 `--execute`；
-- 输入、输出、日志、cache、manifest 的危险路径重叠会在配置加载时直接报错；
-- PDF 执行的最终产物采用 staging / atomic publication，避免半成品被误判为成功。
+重点不再是“证明 OCR 能跑”，而是：
 
-这并不意味着 legacy 脚本已经获得这些保护。直到迁移完成前，根目录旧脚本仍应视为高级用户参考实现。
+- 一个 process worker 初始化一次 PaddleX pipeline；
+- 明确 multiprocessing start method 与 GPU device assignment；
+- render / OCR / searchable-PDF 的统一 `run` orchestration；
+- 更完整 crash-safe resume；
+- GPU self-hosted/manual smoke；
+- OCR/Paddle dependency 与模型缓存，降低公共 CI 重复下载成本；
+- geometry golden fixtures（中文长文本、旋转、双栏等）。
 
-## CI 与已验证环境
-
-### Core baseline
-
-Python 3.9 与 3.12 都验证：
-
-- legacy Python 语法编译；
-- 新 package 全量 compile；
-- dependency-free 单元测试；
-- `pip install --no-deps .`；
-- CLI version / doctor / manifest / PDF command help smoke。
-
-### PDF execution smoke
-
-GitHub Actions 在 Ubuntu 24.04 上实际验证：
-
-| Python | PyMuPDF | Pillow | 结果 |
-| --- | --- | --- | --- |
-| 3.9.25 | 1.26.5 | 11.3.0 | render + searchable-PDF round-trip PASS |
-| 3.12.14 | 1.28.2 | 12.3.0 | render + searchable-PDF round-trip PASS |
-
-测试会在运行时生成 synthetic PDF，拆成 PNG，写入混合历史 OCR JSON，再重建 searchable PDF，并用 PyMuPDF 把隐藏文本提取出来验证。没有提交二进制测试样本。
-
-Paddle、PaddleX、CUDA 的 CPU/GPU 矩阵仍将在独立 smoke / self-hosted 测试中建立，不让公共 CI 假装拥有 GPU 环境。
-
-详见 [`docs/TESTING.md`](docs/TESTING.md)。
-
-## 第三方许可证说明
-
-仓库本身使用 **GNU GPL-3.0**。PDF optional extra 使用 PyMuPDF 与 Pillow：
-
-- Pillow 使用其上游 MIT-CMU license；
-- PyMuPDF 当前由上游以 **GNU AGPL 或商业许可证**提供。
-
-因此，若你要分发包含 PyMuPDF 的组合应用，请自行核对并遵守上游许可证义务；不要把本仓库的 GPL-3.0 误解为会覆盖或替代 PyMuPDF 的许可证条件。
-
-## 新代码结构
-
-```text
-src/paddle_batch_ocr/
-  __init__.py
-  cache.py
-  cli.py
-  config.py
-  discovery.py
-  doctor.py
-  io_utils.py
-  layout.py
-  manifest.py
-  naming.py
-  ocr_schema.py
-  pdf_render.py
-  safety.py
-  searchable_pdf.py
-```
-
-下一阶段重点是 `ocr.py` / PaddleX worker lifecycle、manifest execution integration 和 `run` orchestration。详细阶段见 [`ROADMAP.md`](ROADMAP.md)。
-
-## 重构原则
-
-1. **先保持行为，再整理结构**：没有 fixtures / tests 前不删已验证的旧逻辑。
-2. **安全默认**：递归删除、覆盖、高并发必须显式开启。
-3. **配置与代码分离**：机器路径、GPU 数量、数据集路径不再写死在源码中。
-4. **可恢复**：几十万页任务用 manifest 识别输入变化、结果丢失和失败状态。
-5. **可观测**：吞吐量、错误、跳过、耗时、资源配置要成为结构化数据。
-6. **可复现**：分开维护项目依赖、PDF 依赖与 Paddle/CUDA 环境矩阵。
-7. **文献数字化是一等公民**：中文路径、深目录、大 PDF、异常页和海量文件不能在“重构得漂亮”时被牺牲。
-
-## 贡献
-
-当前最有价值的贡献包括 PaddleX result adapter、CPU/GPU 可复现环境报告、PDF geometry golden tests、OCR worker lifecycle、manifest execution integration 和大任务 resume。参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
-
-## License
-
-本项目使用 **GNU General Public License v3.0 (GPL-3.0)**，详见 [`LICENSE`](LICENSE)。第三方依赖的许可证独立适用，见上文说明。
-
-## 项目来源与说明
-
-`tmzncty/paddle_changeV4` 保留 `Get-data-all/paddle_change` 的 fork 关系、Git 历史和许可证信息。公开重构不会为了让历史“看起来整齐”而抹掉已有来源记录。
+详细进度见 [`ROADMAP.md`](ROADMAP.md)。

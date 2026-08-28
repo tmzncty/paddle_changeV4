@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -13,9 +14,11 @@ from .cache import clean_temp_cache
 from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
 from .manifest import ManifestStore
+from .ocr_runner import OcrRunnerError, run_ocr_batch
 from .pdf_render import PdfRenderError, render_pdf
 from .safety import UnsafePathError
 from .searchable_pdf import SearchablePdfError, build_searchable_pdf
+from .stdio import redirect_process_stdout_to_stderr
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
@@ -186,6 +189,57 @@ def command_searchable_pdf(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ocr(args: argparse.Namespace) -> int:
+    run_kwargs = {
+        "pipeline_ref": args.pipeline,
+        "device": args.device,
+        "engine": args.engine,
+        "use_hpip": True if args.use_hpip else None,
+        "manifest_path": Path(args.manifest) if args.manifest else None,
+        "resume": not args.no_resume,
+        "overwrite": args.overwrite,
+        "use_doc_orientation_classify": args.use_doc_orientation_classify,
+        "use_doc_unwarping": args.use_doc_unwarping,
+        "use_textline_orientation": args.use_textline_orientation,
+    }
+
+    if args.json:
+        # Paddle/PaddleX includes native code that can write directly to fd 1.
+        # Redirect the process-level stdout descriptor while inference runs so
+        # this command's stdout remains a strict JSON channel.
+        with redirect_process_stdout_to_stderr():
+            result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
+    else:
+        result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
+
+    payload = {
+        "success": result.success_count,
+        "skipped": result.skipped_count,
+        "failed": result.failed_count,
+        "tasks": [
+            {
+                "source": str(task.source),
+                "output_json": str(task.output_json),
+                "status": task.status,
+                "error": task.error,
+            }
+            for task in result.tasks
+        ],
+    }
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"success: {result.success_count}")
+        print(f"skipped: {result.skipped_count}")
+        print(f"failed: {result.failed_count}")
+        for task in result.tasks:
+            if task.status == "failed":
+                print(f"FAILED {task.source}: {task.error}")
+
+    return 1 if result.failed_count else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paddle-batch-ocr",
@@ -224,6 +278,70 @@ def build_parser() -> argparse.ArgumentParser:
     searchable.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     searchable.set_defaults(func=command_searchable_pdf)
 
+    ocr = subparsers.add_parser(
+        "ocr",
+        help="Run the serial PaddleX OCR execution contract on an image or image directory",
+    )
+    ocr.add_argument("input", help="Input image or recursively scanned image directory")
+    ocr.add_argument("--output", required=True, help="OCR JSON output directory")
+    ocr.add_argument(
+        "--pipeline",
+        default="OCR",
+        help="PaddleX pipeline name or local pipeline YAML path (default: OCR)",
+    )
+    ocr.add_argument(
+        "--device",
+        default="auto",
+        help="PaddleX device such as auto, cpu, gpu, gpu:0",
+    )
+    ocr.add_argument(
+        "--engine",
+        choices=(
+            "paddle",
+            "paddle_static",
+            "paddle_dynamic",
+            "hpi",
+            "flexible",
+            "transformers",
+            "onnxruntime",
+            "genai_client",
+        ),
+        help="Optional current PaddleX inference engine",
+    )
+    ocr.add_argument(
+        "--use-hpip",
+        action="store_true",
+        help="Enable PaddleX high-performance inference plugin",
+    )
+    ocr.add_argument(
+        "--use-doc-orientation-classify",
+        action="store_true",
+        help="Enable document orientation classification (disabled by default)",
+    )
+    ocr.add_argument(
+        "--use-doc-unwarping",
+        action="store_true",
+        help="Enable document image unwarping (disabled by default)",
+    )
+    ocr.add_argument(
+        "--use-textline-orientation",
+        action="store_true",
+        help="Enable text-line orientation classification (disabled by default)",
+    )
+    ocr.add_argument("--manifest", help="Optional SQLite manifest path")
+    ocr.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Do not adopt/skip valid existing OCR JSON",
+    )
+    ocr.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Atomically replace existing OCR JSON when execution is required",
+    )
+    ocr.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    ocr.set_defaults(func=command_ocr)
+
     cache = subparsers.add_parser("cache", help="Cache maintenance")
     cache_subparsers = cache.add_subparsers(dest="cache_command", required=True)
     clean = cache_subparsers.add_parser("clean", help="Safely clean only <cache_root>/temp")
@@ -258,6 +376,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     except (
         ConfigError,
         UnsafePathError,
+        OcrRunnerError,
         PdfRenderError,
         SearchablePdfError,
         FileNotFoundError,
