@@ -17,6 +17,7 @@ from .doctor import collect_doctor_report
 from .manifest import ManifestStore
 from .manifest_reporting import (
     ManifestReportingError,
+    count_manifest_jobs,
     query_manifest_jobs,
     read_manifest_report,
 )
@@ -251,8 +252,15 @@ def command_manifest_jobs(args: argparse.Namespace) -> int:
             limit=args.limit,
             offset=args.offset,
         )
+        total_matching = count_manifest_jobs(
+            config.manifest_path,
+            status=args.status,
+            stage=args.stage,
+            error_class=args.error_class,
+        )
     else:
         rows = ()
+        total_matching = 0
 
     filters = {
         "status": args.status,
@@ -270,6 +278,7 @@ def command_manifest_jobs(args: argparse.Namespace) -> int:
                     "exists": exists,
                     "filters": filters,
                     "count": len(rows),
+                    "total_matching": total_matching,
                     "jobs": list(rows),
                 },
                 ensure_ascii=False,
@@ -290,6 +299,7 @@ def command_manifest_jobs(args: argparse.Namespace) -> int:
     print(f"manifest: {config.manifest_path}")
     print(f"exists: {exists}")
     print(f"count: {len(rows)}")
+    print(f"total_matching: {total_matching}")
     for row in rows:
         error = ""
         if row.get("error_class"):
