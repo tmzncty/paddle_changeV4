@@ -29,11 +29,14 @@ class RenderResult:
 
 def _require_fitz():
     try:
-        import fitz  # type: ignore
-    except ImportError as exc:
-        raise PdfDependencyError(
-            "PDF rendering requires PyMuPDF; install paddle-batch-ocr[pdf]"
-        ) from exc
+        import pymupdf as fitz  # type: ignore
+    except ImportError:
+        try:
+            import fitz  # type: ignore
+        except ImportError as exc:
+            raise PdfDependencyError(
+                "PDF rendering requires PyMuPDF; install paddle-batch-ocr[pdf]"
+            ) from exc
     return fitz
 
 
@@ -63,7 +66,9 @@ def _replace_directory(staging: Path, target: Path, *, overwrite: bool) -> None:
             os.replace(str(backup), str(target))
             raise
         else:
-            shutil.rmtree(backup)
+            # Publication succeeded. A stale backup is preferable to reporting a
+            # false execution failure after the new output is already live.
+            shutil.rmtree(backup, ignore_errors=True)
     else:
         os.replace(str(staging), str(target))
 
