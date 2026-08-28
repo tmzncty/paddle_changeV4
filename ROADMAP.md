@@ -38,6 +38,7 @@
 - [x] cache temp symlink rejection
 - [x] input/output/log/cache/manifest overlap validation
 - [x] manifest symlink rejection before SQLite open
+- [x] preserve explicit manifest symlink identity through config loading
 - [x] PDF final staging / atomic publication
 - [x] config overwrite/resume wired into project `run`
 - [ ] migrate all legacy `clear_cache()` calls to the safe layer
@@ -53,6 +54,7 @@ paddle-batch-ocr cache clean --config CONFIG
 paddle-batch-ocr manifest status --config CONFIG
 paddle-batch-ocr manifest report --config CONFIG
 paddle-batch-ocr manifest jobs --config CONFIG
+paddle-batch-ocr manifest retry-failed --config CONFIG
 paddle-batch-ocr render INPUT.pdf --output DIR
 paddle-batch-ocr ocr INPUT --output DIR
 paddle-batch-ocr searchable-pdf --images DIR --ocr-json DIR --output FILE.pdf
@@ -64,7 +66,8 @@ paddle-batch-ocr run --config CONFIG
 - [x] `pdf` / `yaml` / `ocr` extras
 - [x] machine-readable JSON modes
 - [x] manifest jobs CSV export
-- [x] fd-level native stdout isolation for OCR/run JSON modes
+- [x] targeted retry dry-run / execute JSON surface
+- [x] fd-level native stdout isolation for OCR/run/retry execute JSON modes
 - [x] config-driven project orchestration
 - [x] deterministic project artifact layout
 
@@ -125,6 +128,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] existing-render validation for resume
 - [x] render stage manifest integration
 - [x] render intended-result / DPI execution profile provenance
+- [x] provenance-validated targeted render retry
 - [ ] colorspace / alpha / format config
 - [ ] segmented huge-PDF recovery
 
@@ -142,6 +146,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] searchable-PDF stage manifest integration
 - [x] downstream invalidation when OCR actually produces new results
 - [x] searchable target + pages/OCR input-directory execution provenance
+- [x] provenance-validated targeted searchable-PDF retry
 - [ ] richer dependency fingerprint beyond source-PDF mtime/size
 - [ ] Chinese long-text / rotation / column geometry goldens
 - [ ] legacy vs corrected geometry mode
@@ -175,13 +180,18 @@ paddle-batch-ocr run --config CONFIG
 - [x] old-schema read-only reporting without migration
 - [x] profile-aware stale detection only when historical profile is known
 - [x] local OCR pipeline config content fingerprint
+- [x] targeted rerun of failed OCR/render/searchable items
+- [x] dry-run by default + explicit `--execute`
+- [x] source/profile/target revalidation immediately before retry action
+- [x] retry target confined to configured `output_root`
+- [x] local OCR pipeline SHA-256 revalidation before automatic retry
 - [ ] full dependency graph / content fingerprints
-- [ ] targeted rerun of failed items
+- [ ] automatic retry policy / backoff
 - [ ] attempt/event history for every retry
 - [ ] stale-running detection / recovery policy
 - [ ] large-manifest query indexing + benchmark
 
-当前 provenance 设计刻意不把 legacy success 的未知执行配置猜成当前配置。历史 `result_path` 可以安全回填 intended target；execution profile 仍保持 unknown，直到任务由新 execution layer 真正执行。
+当前 provenance / retry 设计刻意不把 legacy success 的未知执行配置猜成当前配置。历史 `result_path` 可以安全回填 intended target；execution profile 仍保持 unknown。只有能够重新验证的失败项才进入 automatic targeted retry，无法证明可复现的项保持 ineligible 并交给人工处理。
 
 ## M7 — Tests and CI
 
@@ -194,6 +204,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] spawn worker lifecycle test on Python 3.9 / 3.12
 - [x] real two-worker PaddleX CPU OCR
 - [x] real serial/parallel PaddleX manifest-provenance assertions
+- [x] real PP-OCRv6 targeted retry fixture / dry-run / execute / manifest-repair gate
 - [x] pip cache for heavy jobs
 - [x] PaddleX official-model cache
 - [x] current official Actions major versions
@@ -201,7 +212,7 @@ paddle-batch-ocr run --config CONFIG
 - [ ] GPU manual / self-hosted smoke
 - [ ] expanded geometry golden tests
 
-Validated real OCR matrix:
+Validated real OCR / targeted-retry matrix:
 
 ```text
 Ubuntu 24.04
@@ -212,7 +223,16 @@ PP-OCRv6_small_det
 PP-OCRv6_small_rec
 ```
 
-PaddlePaddle 3.3.0 CPU oneDNN/PIR regression remains documented; CI uses 3.2.2 until upstream changes are revalidated.
+Targeted retry gate currently proves:
+
+```text
+targeted_retry_fixture=PASS
+targeted_retry_dry_run=PASS
+targeted_retry_recognized_lines=4
+targeted_retry_real_ocr=PASS
+```
+
+PaddlePaddle 3.3.0 CPU oneDNN/PIR regression remains documented; CI uses 3.2.2 until upstream changes are revalidated。
 
 ## M8 — Reproducible environments
 
@@ -237,7 +257,7 @@ After new CLI coverage and real-data comparison are sufficient:
 - [ ] changelog / release notes
 - [ ] README becomes current-path only
 
-Current `render`, OCR (serial + CPU process workers), `searchable-pdf`, and project `run` all have public execution paths. Legacy remains until broader real-data and geometry validation is complete.
+Current `render`, OCR (serial + CPU process workers), `searchable-pdf`, project `run`, manifest observability and provenance-validated targeted retry all have public execution paths. Legacy remains until broader real-data and geometry validation is complete.
 
 ## Non-goals
 
@@ -247,5 +267,7 @@ Short term:
 - no general GUI;
 - no pretend support for every CUDA/driver combination;
 - no blind multi-process replication onto one GPU;
+- no arbitrary-path retry driven only by a mutable SQLite row;
+- no automatic retry of unverifiable named-pipeline history;
 - no deleting historical code merely for aesthetics;
 - no abstraction that sacrifices large-batch throughput without evidence.

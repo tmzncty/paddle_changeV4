@@ -25,6 +25,23 @@ def _as_path(value: object, *, base_dir: Path) -> Path:
     return path.resolve(strict=False)
 
 
+def _as_manifest_path(value: object, *, base_dir: Path) -> Path:
+    """Make a manifest path absolute without erasing final symlink identity.
+
+    Manifest readers/writers reject symlinked database paths before opening
+    SQLite. Calling ``resolve()`` here would follow the link too early and make
+    that safety boundary impossible to enforce. Other containment checks still
+    resolve paths through ``is_within`` when they need realpath semantics.
+    """
+
+    if not isinstance(value, (str, os.PathLike)):
+        raise ConfigError(f"expected a filesystem path, got {type(value).__name__}")
+    path = Path(os.fspath(value)).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.absolute()
+
+
 def _positive_int(value: object, *, name: str, default: int) -> int:
     if value is None:
         return default
@@ -173,9 +190,9 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
 
     manifest_raw = data.get("manifest_path")
     manifest_path = (
-        _as_path(manifest_raw, base_dir=base_dir)
+        _as_manifest_path(manifest_raw, base_dir=base_dir)
         if manifest_raw not in (None, "")
-        else (log_dir / "manifest.sqlite3").resolve(strict=False)
+        else (log_dir / "manifest.sqlite3").absolute()
     )
 
     raw_runtime = data.get("runtime", {})

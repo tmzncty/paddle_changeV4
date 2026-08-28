@@ -619,6 +619,11 @@ def build_parser() -> argparse.ArgumentParser:
     output_group.add_argument("--csv", action="store_true")
     jobs.set_defaults(func=command_manifest_jobs)
 
+    # Keep targeted retry formatting and execution policy isolated from this
+    # already-large general CLI module.
+    from .retry_cli import install_manifest_retry_subparser
+
+    install_manifest_retry_subparser(manifest_subparsers)
     return parser
 
 

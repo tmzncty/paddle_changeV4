@@ -14,13 +14,14 @@
 4. 原子保存逐页 OCR JSON；
 5. 从 OCR 坐标重建 searchable PDF；
 6. 用 SQLite manifest 管理长时间任务的 resume / stale / failure；
-7. 在安全边界明确的前提下扩展 CPU 多进程吞吐。
+7. 在安全边界明确的前提下扩展 CPU 多进程吞吐；
+8. 基于已验证 provenance 精确 dry-run / 重跑少量失败任务。
 
 根目录 legacy 脚本保留了过去几十万页级任务中的吞吐量、缓存、并发和异常页处理经验，但仍含机器专属路径和激进参数，**不能当作公开项目的通用默认值**。
 
 ## 当前状态
 
-**Status: public PDF execution + validated PaddleX OCR + CPU spawn workers + project orchestration**
+**Status: public PDF execution + validated PaddleX OCR + CPU spawn workers + project orchestration + targeted retry**
 
 当前新的 package 位于 `src/paddle_batch_ocr/`，已经具备：
 
@@ -33,6 +34,10 @@ configured PDF source
   -> render
   -> OCR
   -> searchable PDF
+
+failed manifest row
+  -> provenance validation / dry-run
+  -> explicit targeted retry
 ```
 
 OCR 有两条执行路径：
@@ -40,7 +45,7 @@ OCR 有两条执行路径：
 - `workers=1`：已用真实 PaddleX / PP-OCRv6 CPU 模型验证的串行路径；
 - `workers>1`：`spawn` 多进程，每个 process 惰性初始化一个 pipeline。当前只允许显式 `device=cpu`；GPU worker pool 仍未开放。
 
-公共 CI 同时使用 fake picklable pipeline 做跨 Python 的 spawn 生命周期测试，并使用真实 PaddleX 模型做 CPU OCR smoke。
+公共 CI 同时使用 fake picklable pipeline 做跨 Python 的 spawn 生命周期测试，并使用真实 PaddleX 模型做 CPU OCR、two-worker 和 targeted-retry smoke。
 
 ## 安装
 
@@ -243,6 +248,32 @@ image source 当前运行 OCR-only：
 
 更多语义见 [`docs/PROJECT_RUN.md`](docs/PROJECT_RUN.md)。
 
+### Targeted retry
+
+先只看失败任务能否被安全自动恢复：
+
+```bash
+paddle-batch-ocr manifest retry-failed \
+  --config project.json \
+  --stage ocr \
+  --json
+```
+
+默认是 **dry-run**，不会执行 OCR/render/searchable-PDF，也不会改任务状态。确认计划以后才显式执行：
+
+```bash
+paddle-batch-ocr manifest retry-failed \
+  --config project.json \
+  --stage ocr \
+  --execute
+```
+
+如果 intended target 已存在，候选会显示为 `blocked`；只有明确增加 `--overwrite` 才允许替换。`--overwrite` 不会绕过 source fingerprint、`output_root` containment、symlink、execution profile 或本地 pipeline SHA-256 校验。
+
+第一版 targeted retry 支持 `ocr / render / searchable_pdf`，顺序执行少量失败项，并在真正动作前再次验证 manifest 与文件系统，防止 dry-run 后状态变化。OCR 自动重跑要求本地 pipeline 文件的 SHA-256 provenance 可复现；只有 named pipeline 的旧记录不会被猜测执行。
+
+详细安全合同、示例和退出码见 [`docs/TARGETED_RETRY.md`](docs/TARGETED_RETRY.md)。
+
 ## Project configuration
 
 从 [`examples/config.json`](examples/config.json) 开始：
@@ -280,6 +311,7 @@ image source 当前运行 OCR-only：
 - cache root 不能是 filesystem root / home / cwd；
 - cache temp symlink 拒绝；
 - manifest symlink 在 SQLite open 前拒绝；
+- explicit manifest config 会保留 symlink 身份，不会先 resolve 掉安全信息；
 - destructive boundary 使用真实路径 containment。
 
 若你使用 `workers>1`，当前配置必须显式：
@@ -341,11 +373,21 @@ writer 打开旧 manifest 时会向后兼容迁移 provenance 列；历史 succe
 3. Python 3.9 / 3.12 real PDF execution smoke；
 4. project orchestration 的 real render + fake OCR + real searchable-PDF round-trip；
 5. Python 3.12 real PaddleX CPU serial OCR；
-6. Python 3.12 real PaddleX CPU two-worker smoke。
+6. Python 3.12 real PaddleX CPU two-worker smoke；
+7. real PP-OCRv6 targeted retry：制造 provenance 完整的 failed row → dry-run 零副作用 → explicit execute → OCR JSON 重读 → manifest success。
 
 CI 使用当前 major 的 official Actions，并缓存 pip downloads 与 `~/.paddlex/official_models`。PR branch 不再同时触发“branch push + PR”两份昂贵 OCR；main 由 push 验证，feature branch 由 PR 验证。
 
 真实 serial / two-worker gates 不只检查 OCR 输出：还验证 manifest 的 intended target、本地 pipeline YAML SHA-256 execution profile，以及 two-worker PID 数量。因此 provenance 也有真实 PaddleX CPU 证据。
+
+真实 targeted-retry gate 当前确认：
+
+```text
+targeted_retry_fixture=PASS
+targeted_retry_dry_run=PASS
+targeted_retry_recognized_lines=4
+targeted_retry_real_ocr=PASS
+```
 
 ## Legacy implementation index
 
@@ -370,9 +412,8 @@ legacy 数字文件名只是迭代痕迹，不是稳定 API。
 
 下一阶段重点：
 
-- 基于 manifest provenance 的 targeted retry：先 dry-run，再 explicit execute；
-- retry 时校验本地 pipeline 历史 SHA-256，未知 profile 不猜；
 - retry policy 与更细 failure classes；
+- stale-running detection / recovery policy；
 - 对 render / searchable stage 建立更完整 dependency fingerprints；
 - GPU worker device map + manual/self-hosted validation；
 - PDF geometry golden fixtures（中文长文本、旋转、双栏）；

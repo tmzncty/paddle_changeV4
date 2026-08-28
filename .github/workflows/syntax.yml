@@ -59,6 +59,7 @@ jobs:
           paddle-batch-ocr manifest status --config examples/config.json --json
           paddle-batch-ocr manifest report --config examples/config.json --json
           paddle-batch-ocr manifest jobs --config examples/config.json --json
+          paddle-batch-ocr manifest retry-failed --help
           paddle-batch-ocr render --help
           paddle-batch-ocr searchable-pdf --help
           paddle-batch-ocr ocr --help
@@ -279,4 +280,143 @@ jobs:
 
           print(f"parallel_real_ocr_workers={sorted(workers)}")
           print("parallel_real_ocr_provenance=PASS")
+          PY
+
+      - name: Create provenance-complete failed OCR retry fixture
+        env:
+          PYTHONPATH: src:.
+        run: |
+          mkdir -p /tmp/retry-input /tmp/retry-project/output /tmp/retry-project/logs /tmp/retry-project/cache
+          cp /tmp/general_ocr_001.png /tmp/retry-input/retry_page.png
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from paddle_batch_ocr.manifest import ManifestStore
+          from paddle_batch_ocr.ocr_runner import build_ocr_execution_profile
+          from paddle_batch_ocr.paddlex_adapter import default_ocr_predict_kwargs
+
+          root = Path("/tmp/retry-project")
+          source = Path("/tmp/retry-input/retry_page.png")
+          target = root / "output" / "ocr" / "retry_page_result.json"
+          manifest = root / "logs" / "manifest.sqlite3"
+          pipeline = Path("configs/paddlex/ocr-ci-small.yaml").resolve()
+
+          config = {
+              "input_sources": [
+                  {"path": "/tmp/retry-input", "type": "image"}
+              ],
+              "output_root": str(root / "output"),
+              "log_dir": str(root / "logs"),
+              "cache_root": str(root / "cache"),
+              "manifest_path": str(manifest),
+              "paddle_config": str(pipeline),
+              "runtime": {"device": "cpu", "ocr_workers": 1},
+              "overwrite": False,
+              "resume": True,
+          }
+          (root / "project.json").write_text(
+              json.dumps(config), encoding="utf-8"
+          )
+
+          profile = build_ocr_execution_profile(
+              pipeline_ref=pipeline,
+              device="cpu",
+              engine=None,
+              use_hpip=None,
+              predict_kwargs=default_ocr_predict_kwargs(),
+          )
+          with ManifestStore(manifest) as store:
+              record = store.mark_failure(
+                  source,
+                  "ocr",
+                  RuntimeError("synthetic targeted-retry CI failure"),
+                  intended_result_path=target,
+                  execution_profile=profile,
+              )
+
+          assert record.status == "failed"
+          assert record.retry_count == 1
+          assert not target.exists()
+          print("targeted_retry_fixture=PASS")
+          PY
+
+      - name: Verify targeted retry dry-run is read-only
+        env:
+          PYTHONPATH: src:.
+        run: |
+          paddle-batch-ocr manifest retry-failed \
+            --config /tmp/retry-project/project.json \
+            --stage ocr \
+            --json > /tmp/retry-plan.json
+          cat /tmp/retry-plan.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from paddle_batch_ocr.manifest import ManifestStore
+
+          plan = json.loads(Path("/tmp/retry-plan.json").read_text(encoding="utf-8"))
+          assert plan["mode"] == "dry-run", plan
+          assert plan["eligible"] == 1, plan
+          assert plan["blocked"] == 0, plan
+          assert plan["ineligible"] == 0, plan
+
+          source = Path("/tmp/retry-input/retry_page.png")
+          target = Path("/tmp/retry-project/output/ocr/retry_page_result.json")
+          with ManifestStore(Path("/tmp/retry-project/logs/manifest.sqlite3")) as store:
+              record = store.get_job(source, "ocr")
+          assert record.status == "failed", record
+          assert record.retry_count == 1, record
+          assert not target.exists(), target
+          print("targeted_retry_dry_run=PASS")
+          PY
+
+      - name: Execute real PP-OCRv6 targeted retry
+        run: |
+          paddle-batch-ocr manifest retry-failed \
+            --config /tmp/retry-project/project.json \
+            --stage ocr \
+            --execute \
+            --json > /tmp/retry-execution.json
+          cat /tmp/retry-execution.json
+
+      - name: Validate targeted retry repair
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from paddle_batch_ocr.manifest import ManifestStore
+          from paddle_batch_ocr.ocr_schema import parse_ocr_page
+
+          execution = json.loads(
+              Path("/tmp/retry-execution.json").read_text(encoding="utf-8")
+          )
+          assert execution["mode"] == "execute", execution
+          assert execution["execution"]["success"] == 1, execution
+          assert execution["execution"]["failed"] == 0, execution
+
+          source = Path("/tmp/retry-input/retry_page.png")
+          target = Path("/tmp/retry-project/output/ocr/retry_page_result.json")
+          assert target.is_file(), target
+          page = parse_ocr_page(
+              json.loads(target.read_text(encoding="utf-8"))
+          )
+          assert len(page.lines) > 0
+
+          with ManifestStore(Path("/tmp/retry-project/logs/manifest.sqlite3")) as store:
+              record = store.get_job(source, "ocr")
+          assert record.status == "success", record
+          assert record.result_path == str(target.resolve()), record
+          assert record.intended_result_path == str(target.resolve()), record
+          assert record.retry_count == 1, record
+          assert record.execution_profile["pipeline"]["type"] == "file"
+
+          print(f"targeted_retry_recognized_lines={len(page.lines)}")
+          print("targeted_retry_real_ocr=PASS")
           PY
