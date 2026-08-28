@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -15,6 +14,7 @@ from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
 from .manifest import ManifestStore
 from .ocr_runner import OcrRunnerError, run_ocr_batch
+from .orchestrator import ProjectRunError, run_project
 from .pdf_render import PdfRenderError, render_pdf
 from .safety import UnsafePathError
 from .searchable_pdf import SearchablePdfError, build_searchable_pdf
@@ -26,6 +26,14 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
 
 def _count_files(root: Path, kind: str) -> int:
     if not root.exists():
+        return 0
+
+    if root.is_file():
+        suffix = root.suffix.lower()
+        if kind == "pdf":
+            return int(suffix == ".pdf")
+        if kind == "image":
+            return int(suffix in IMAGE_EXTENSIONS)
         return 0
 
     count = 0
@@ -42,6 +50,7 @@ def _count_files(root: Path, kind: str) -> int:
 def _format_bytes(value: Optional[int]) -> str:
     if value is None:
         return "unknown"
+
     size = float(value)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if size < 1024 or unit == "TiB":
@@ -55,8 +64,9 @@ def _load_optional_config(path: Optional[str]) -> Optional[ProjectConfig]:
 
 
 def command_doctor(args: argparse.Namespace) -> int:
-    config = _load_optional_config(args.config)
-    report = collect_doctor_report(config)
+    report = collect_doctor_report(
+        _load_optional_config(args.config)
+    )
 
     if args.json:
         print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
@@ -115,6 +125,7 @@ def command_cache_clean(args: argparse.Namespace) -> int:
 
 def command_manifest_status(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+
     if config.manifest_path.exists():
         with ManifestStore(config.manifest_path) as store:
             summary = store.summary()
@@ -133,10 +144,10 @@ def command_manifest_status(args: argparse.Namespace) -> int:
     else:
         print(f"manifest: {payload['manifest_path']}")
         print(f"exists: {payload['exists']}")
-        if summary:
-            for status, count in sorted(summary.items()):
-                print(f"{status:8} {count:8d}")
+        for status, count in sorted(summary.items()):
+            print(f"{status:8} {count:8d}")
         print(f"total    {payload['total']:8d}")
+
     return 0
 
 
@@ -147,6 +158,7 @@ def command_render(args: argparse.Namespace) -> int:
         dpi=args.dpi,
         overwrite=args.overwrite,
     )
+
     payload = {
         "source": str(result.source),
         "output_dir": str(result.output_dir),
@@ -154,6 +166,7 @@ def command_render(args: argparse.Namespace) -> int:
         "dpi": result.dpi,
         "pages": [str(path) for path in result.page_paths],
     }
+
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -161,6 +174,7 @@ def command_render(args: argparse.Namespace) -> int:
         print(f"pages: {result.page_count}")
         print(f"dpi: {result.dpi}")
         print(f"output: {result.output_dir}")
+
     return 0
 
 
@@ -173,6 +187,7 @@ def command_searchable_pdf(args: argparse.Namespace) -> int:
         y_offset=args.y_offset,
         fontname=args.fontname,
     )
+
     payload = {
         "output_pdf": str(result.output_pdf),
         "page_count": result.page_count,
@@ -180,39 +195,19 @@ def command_searchable_pdf(args: argparse.Namespace) -> int:
         "images": [str(path) for path in result.image_paths],
         "ocr_json": [str(path) for path in result.json_paths],
     }
+
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(f"searchable PDF: {result.output_pdf}")
         print(f"pages: {result.page_count}")
         print(f"text lines: {result.text_line_count}")
+
     return 0
 
 
-def command_ocr(args: argparse.Namespace) -> int:
-    run_kwargs = {
-        "pipeline_ref": args.pipeline,
-        "device": args.device,
-        "engine": args.engine,
-        "use_hpip": True if args.use_hpip else None,
-        "manifest_path": Path(args.manifest) if args.manifest else None,
-        "resume": not args.no_resume,
-        "overwrite": args.overwrite,
-        "use_doc_orientation_classify": args.use_doc_orientation_classify,
-        "use_doc_unwarping": args.use_doc_unwarping,
-        "use_textline_orientation": args.use_textline_orientation,
-    }
-
-    if args.json:
-        # Paddle/PaddleX includes native code that can write directly to fd 1.
-        # Redirect the process-level stdout descriptor while inference runs so
-        # this command's stdout remains a strict JSON channel.
-        with redirect_process_stdout_to_stderr():
-            result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
-    else:
-        result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
-
-    payload = {
+def _ocr_payload(result) -> dict:
+    return {
         "success": result.success_count,
         "skipped": result.skipped_count,
         "failed": result.failed_count,
@@ -227,6 +222,38 @@ def command_ocr(args: argparse.Namespace) -> int:
         ],
     }
 
+
+def command_ocr(args: argparse.Namespace) -> int:
+    run_kwargs = {
+        "pipeline_ref": args.pipeline,
+        "device": args.device,
+        "engine": args.engine,
+        "use_hpip": True if args.use_hpip else None,
+        "manifest_path": Path(args.manifest) if args.manifest else None,
+        "resume": not args.no_resume,
+        "overwrite": args.overwrite,
+        "use_doc_orientation_classify": args.use_doc_orientation_classify,
+        "use_doc_unwarping": args.use_doc_unwarping,
+        "use_textline_orientation": args.use_textline_orientation,
+        "workers": args.workers,
+    }
+
+    if args.json:
+        with redirect_process_stdout_to_stderr():
+            result = run_ocr_batch(
+                Path(args.input),
+                Path(args.output),
+                **run_kwargs,
+            )
+    else:
+        result = run_ocr_batch(
+            Path(args.input),
+            Path(args.output),
+            **run_kwargs,
+        )
+
+    payload = _ocr_payload(result)
+
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -240,6 +267,47 @@ def command_ocr(args: argparse.Namespace) -> int:
     return 1 if result.failed_count else 0
 
 
+def command_run(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+
+    if args.json:
+        with redirect_process_stdout_to_stderr():
+            result = run_project(config, dpi=args.dpi)
+    else:
+        result = run_project(config, dpi=args.dpi)
+
+    payload = {
+        "success": result.success_count,
+        "failed": result.failed_count,
+        "items": [
+            {
+                "source": str(item.source),
+                "kind": item.kind,
+                "status": item.status,
+                "pages_dir": str(item.pages_dir) if item.pages_dir else None,
+                "ocr_dir": str(item.ocr_dir) if item.ocr_dir else None,
+                "searchable_pdf": (
+                    str(item.searchable_pdf) if item.searchable_pdf else None
+                ),
+                "error": item.error,
+            }
+            for item in result.items
+        ],
+    }
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"success: {result.success_count}")
+        print(f"failed: {result.failed_count}")
+        for item in result.items:
+            print(f"{item.status.upper():7} {item.kind:5} {item.source}")
+            if item.error:
+                print(f"  {item.error}")
+
+    return 1 if result.failed_count else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paddle-batch-ocr",
@@ -248,20 +316,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    doctor = subparsers.add_parser("doctor", help="Inspect runtime, dependencies, GPU and disk")
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Inspect runtime, dependencies, GPU and disk",
+    )
     doctor.add_argument("--config", help="Optional project JSON/YAML config")
     doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     doctor.set_defaults(func=command_doctor)
 
-    scan = subparsers.add_parser("scan", help="Count configured input files without OCR")
+    scan = subparsers.add_parser(
+        "scan",
+        help="Count configured input files without OCR",
+    )
     scan.add_argument("--config", required=True, help="Project JSON/YAML config")
     scan.set_defaults(func=command_scan)
 
-    render = subparsers.add_parser("render", help="Render every PDF page to a transactional PNG directory")
-    render.add_argument("input_pdf", help="Input PDF path")
+    render = subparsers.add_parser(
+        "render",
+        help="Render every PDF page to a transactional PNG directory",
+    )
+    render.add_argument("input_pdf")
     render.add_argument("--output", required=True, help="Final page-image directory")
-    render.add_argument("--dpi", type=int, default=144, help="Render DPI (36-1200; default 144)")
-    render.add_argument("--overwrite", action="store_true", help="Replace an existing output directory transactionally")
+    render.add_argument(
+        "--dpi",
+        type=int,
+        default=144,
+        help="Render DPI (36-1200; default 144)",
+    )
+    render.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing output directory transactionally",
+    )
     render.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     render.set_defaults(func=command_render)
 
@@ -269,30 +355,28 @@ def build_parser() -> argparse.ArgumentParser:
         "searchable-pdf",
         help="Build a searchable PDF from page images and Paddle OCR JSON",
     )
-    searchable.add_argument("--images", required=True, help="Directory containing page_<number> images")
-    searchable.add_argument("--ocr-json", required=True, help="Directory containing OCR JSON files")
-    searchable.add_argument("--output", required=True, help="Final searchable PDF path")
-    searchable.add_argument("--fontname", default="china-s", help="PyMuPDF font name (default: china-s)")
-    searchable.add_argument("--y-offset", type=float, default=0.0, help="Legacy-v7 text Y offset")
-    searchable.add_argument("--overwrite", action="store_true", help="Replace an existing output PDF atomically")
-    searchable.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    searchable.add_argument("--images", required=True)
+    searchable.add_argument("--ocr-json", required=True)
+    searchable.add_argument("--output", required=True)
+    searchable.add_argument("--fontname", default="china-s")
+    searchable.add_argument("--y-offset", type=float, default=0.0)
+    searchable.add_argument("--overwrite", action="store_true")
+    searchable.add_argument("--json", action="store_true")
     searchable.set_defaults(func=command_searchable_pdf)
 
     ocr = subparsers.add_parser(
         "ocr",
-        help="Run the serial PaddleX OCR execution contract on an image or image directory",
+        help="Run PaddleX OCR on an image or recursively scanned image directory",
     )
-    ocr.add_argument("input", help="Input image or recursively scanned image directory")
-    ocr.add_argument("--output", required=True, help="OCR JSON output directory")
+    ocr.add_argument("input")
+    ocr.add_argument("--output", required=True)
+    ocr.add_argument("--pipeline", default="OCR")
+    ocr.add_argument("--device", default="auto")
     ocr.add_argument(
-        "--pipeline",
-        default="OCR",
-        help="PaddleX pipeline name or local pipeline YAML path (default: OCR)",
-    )
-    ocr.add_argument(
-        "--device",
-        default="auto",
-        help="PaddleX device such as auto, cpu, gpu, gpu:0",
+        "--workers",
+        type=int,
+        default=1,
+        help="OCR worker processes; workers>1 currently requires explicit --device cpu",
     )
     ocr.add_argument(
         "--engine",
@@ -306,63 +390,42 @@ def build_parser() -> argparse.ArgumentParser:
             "onnxruntime",
             "genai_client",
         ),
-        help="Optional current PaddleX inference engine",
     )
-    ocr.add_argument(
-        "--use-hpip",
-        action="store_true",
-        help="Enable PaddleX high-performance inference plugin",
-    )
-    ocr.add_argument(
-        "--use-doc-orientation-classify",
-        action="store_true",
-        help="Enable document orientation classification (disabled by default)",
-    )
-    ocr.add_argument(
-        "--use-doc-unwarping",
-        action="store_true",
-        help="Enable document image unwarping (disabled by default)",
-    )
-    ocr.add_argument(
-        "--use-textline-orientation",
-        action="store_true",
-        help="Enable text-line orientation classification (disabled by default)",
-    )
-    ocr.add_argument("--manifest", help="Optional SQLite manifest path")
-    ocr.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Do not adopt/skip valid existing OCR JSON",
-    )
-    ocr.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Atomically replace existing OCR JSON when execution is required",
-    )
-    ocr.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    ocr.add_argument("--use-hpip", action="store_true")
+    ocr.add_argument("--use-doc-orientation-classify", action="store_true")
+    ocr.add_argument("--use-doc-unwarping", action="store_true")
+    ocr.add_argument("--use-textline-orientation", action="store_true")
+    ocr.add_argument("--manifest")
+    ocr.add_argument("--no-resume", action="store_true")
+    ocr.add_argument("--overwrite", action="store_true")
+    ocr.add_argument("--json", action="store_true")
     ocr.set_defaults(func=command_ocr)
+
+    run = subparsers.add_parser(
+        "run",
+        help="Execute configured PDF render -> OCR -> searchable-PDF and image OCR stages",
+    )
+    run.add_argument("--config", required=True, help="Project JSON/YAML config")
+    run.add_argument("--dpi", type=int, default=144, help="PDF render DPI")
+    run.add_argument("--json", action="store_true")
+    run.set_defaults(func=command_run)
 
     cache = subparsers.add_parser("cache", help="Cache maintenance")
     cache_subparsers = cache.add_subparsers(dest="cache_command", required=True)
-    clean = cache_subparsers.add_parser("clean", help="Safely clean only <cache_root>/temp")
-    clean.add_argument("--config", required=True, help="Project JSON/YAML config")
-    clean.add_argument(
-        "--execute",
-        action="store_true",
-        help="Actually delete; without this flag the command is a dry-run",
+    clean = cache_subparsers.add_parser(
+        "clean",
+        help="Safely clean only <cache_root>/temp",
     )
-    clean.add_argument(
-        "--no-recreate",
-        action="store_true",
-        help="Do not recreate the temp directory after deletion",
-    )
+    clean.add_argument("--config", required=True)
+    clean.add_argument("--execute", action="store_true")
+    clean.add_argument("--no-recreate", action="store_true")
     clean.set_defaults(func=command_cache_clean)
 
     manifest = subparsers.add_parser("manifest", help="Inspect persistent job state")
     manifest_subparsers = manifest.add_subparsers(dest="manifest_command", required=True)
     status = manifest_subparsers.add_parser("status", help="Show manifest status counts")
-    status.add_argument("--config", required=True, help="Project JSON/YAML config")
-    status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    status.add_argument("--config", required=True)
+    status.add_argument("--json", action="store_true")
     status.set_defaults(func=command_manifest_status)
 
     return parser
@@ -377,6 +440,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         ConfigError,
         UnsafePathError,
         OcrRunnerError,
+        ProjectRunError,
         PdfRenderError,
         SearchablePdfError,
         FileNotFoundError,

@@ -1,4 +1,4 @@
-"""Serial, manifest-aware OCR execution built on the lazy PaddleX adapter."""
+"""Manifest-aware OCR task discovery and serial/parallel execution."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .manifest import ManifestStore
 from .paddlex_adapter import (
@@ -65,12 +65,26 @@ def _safe_output_root(path: Path) -> Path:
     return raw.resolve(strict=False)
 
 
+def _validate_unique_outputs(tasks: List[OcrTask]) -> None:
+    owners: Dict[str, Path] = {}
+    for task in tasks:
+        key = os.path.normcase(os.fspath(task.output_json))
+        previous = owners.get(key)
+        if previous is not None:
+            raise OcrRunnerError(
+                "multiple OCR inputs map to the same output JSON: "
+                f"{previous} and {task.source} -> {task.output_json}"
+            )
+        owners[key] = task.source
+
+
 def discover_ocr_tasks(input_path: Path, output_dir: Path) -> Tuple[OcrTask, ...]:
-    """Discover image inputs and map them to deterministic ``*_result.json`` paths."""
+    """Map image inputs to deterministic ``*_result.json`` output paths."""
 
     raw_input = Path(input_path).expanduser()
     if raw_input.is_symlink():
         raise OcrRunnerError(f"refusing symlinked OCR input: {raw_input}")
+
     source = raw_input.resolve(strict=True)
     target_root = _safe_output_root(output_dir)
 
@@ -94,15 +108,18 @@ def discover_ocr_tasks(input_path: Path, output_dir: Path) -> Tuple[OcrTask, ...
         dirs.sort()
         files.sort()
         root_path = Path(root)
+
         for filename in files:
             image = root_path / filename
             if image.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
             if image.is_symlink():
                 raise OcrRunnerError(f"refusing symlinked OCR image: {image}")
+
             resolved = image.resolve(strict=True)
             if not is_within(resolved, source):
                 raise OcrRunnerError(f"OCR image resolves outside input root: {image}")
+
             relative = resolved.relative_to(source)
             output_relative = relative.with_name(f"{relative.stem}_result.json")
             tasks.append(
@@ -112,6 +129,7 @@ def discover_ocr_tasks(input_path: Path, output_dir: Path) -> Tuple[OcrTask, ...
                 )
             )
 
+    _validate_unique_outputs(tasks)
     return tuple(tasks)
 
 
@@ -138,9 +156,13 @@ def run_ocr_batch(
     use_doc_orientation_classify: bool = False,
     use_doc_unwarping: bool = False,
     use_textline_orientation: bool = False,
+    workers: int = 1,
     create_pipeline_fn: Optional[Callable[..., object]] = None,
 ) -> OcrBatchResult:
-    """Run OCR serially with one lazily-created pipeline instance."""
+    """Run OCR with the serial contract or the safe spawn-based CPU worker pool."""
+
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise OcrRunnerError("workers must be an integer >= 1")
 
     tasks = discover_ocr_tasks(input_path, output_dir)
     if not tasks:
@@ -151,6 +173,24 @@ def run_ocr_batch(
         use_doc_unwarping=use_doc_unwarping,
         use_textline_orientation=use_textline_orientation,
     )
+
+    if workers > 1:
+        from .ocr_parallel import run_ocr_parallel
+
+        return run_ocr_parallel(
+            tasks,
+            workers=workers,
+            pipeline_ref=pipeline_ref,
+            device=device,
+            engine=engine,
+            use_hpip=use_hpip,
+            manifest_path=manifest_path,
+            resume=resume,
+            overwrite=overwrite,
+            predict_kwargs=predict_kwargs,
+            create_pipeline_fn=create_pipeline_fn,
+            start_method="spawn",
+        )
 
     pipeline: Optional[object] = None
     pipeline_error: Optional[Exception] = None
@@ -164,6 +204,7 @@ def run_ocr_batch(
                 "PaddleX pipeline initialization previously failed: "
                 f"{type(pipeline_error).__name__}: {pipeline_error}"
             ) from pipeline_error
+
         try:
             pipeline = create_ocr_pipeline(
                 pipeline_ref,
@@ -173,15 +214,13 @@ def run_ocr_batch(
                 create_pipeline_fn=create_pipeline_fn,
             )
         except Exception as exc:
-            # Cache a batch-wide initialization failure. A broken runtime/model
-            # setup must not repeat expensive pipeline construction once per
-            # image in a very large input tree.
             pipeline_error = exc
             raise
         return pipeline
 
     store = ManifestStore(manifest_path) if manifest_path is not None else None
     results: List[OcrTaskResult] = []
+
     try:
         for task in tasks:
             try:
@@ -221,7 +260,11 @@ def run_ocr_batch(
                     if not overwrite:
                         reason = (
                             "existing result is stale according to manifest; use --overwrite"
-                            if store is not None and previous_record is not None and manifest_needs_run
+                            if (
+                                store is not None
+                                and previous_record is not None
+                                and manifest_needs_run
+                            )
                             else "OCR output already exists; enable resume or overwrite"
                         )
                         raise OcrRunnerError(f"{reason}: {task.output_json}")
@@ -248,6 +291,7 @@ def run_ocr_batch(
                         "ocr",
                         result_path=task.output_json,
                     )
+
                 results.append(
                     OcrTaskResult(
                         source=task.source,

@@ -4,11 +4,14 @@ on:
   push:
     branches:
       - main
-      - refactor/**
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   baseline:
@@ -21,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -57,6 +60,7 @@ jobs:
           paddle-batch-ocr render --help
           paddle-batch-ocr searchable-pdf --help
           paddle-batch-ocr ocr --help
+          paddle-batch-ocr run --help
 
   pdf-smoke:
     runs-on: ubuntu-latest
@@ -66,12 +70,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install PDF execution dependencies
         run: python -m pip install '.[pdf]'
@@ -87,12 +93,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Restore PaddleX OCR models
+        uses: actions/cache@v6
+        with:
+          path: ~/.paddlex/official_models
+          key: paddlex37-ocr-${{ runner.os }}-py312-${{ hashFiles('configs/paddlex/ocr-ci-small.yaml') }}
+          restore-keys: |
+            paddlex37-ocr-${{ runner.os }}-py312-
 
       # PaddlePaddle 3.3.0 currently has a known CPU oneDNN/PIR regression
       # (Paddle #77340 / PaddleX #4970). 3.2.2 is the upstream-documented
@@ -110,6 +126,7 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.metadata as metadata
+
           for name in ("paddlepaddle", "paddlex", "paddleocr"):
               try:
                   print(f"{name}={metadata.version(name)}")
@@ -124,7 +141,7 @@ jobs:
             --output /tmp/general_ocr_001.png
           test -s /tmp/general_ocr_001.png
 
-      - name: Run real PaddleX OCR through project CLI
+      - name: Run real serial PaddleX OCR through project CLI
         run: |
           set +e
           paddle-batch-ocr ocr /tmp/general_ocr_001.png \
@@ -137,27 +154,89 @@ jobs:
           cat /tmp/ocr-summary.json
           exit "$ocr_rc"
 
-      - name: Validate produced OCR JSON through project schema
+      - name: Validate serial OCR JSON through project schema
         env:
           PYTHONPATH: src:.
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
+
           from paddle_batch_ocr.ocr_schema import parse_ocr_page
 
-          summary = json.loads(Path("/tmp/ocr-summary.json").read_text(encoding="utf-8"))
+          summary = json.loads(
+              Path("/tmp/ocr-summary.json").read_text(encoding="utf-8")
+          )
           assert summary["success"] == 1, summary
           assert summary["failed"] == 0, summary
 
           output = Path("/tmp/ocr-json/general_ocr_001_result.json")
           assert output.is_file(), output
+
           payload = json.loads(output.read_text(encoding="utf-8"))
           page = parse_ocr_page(payload)
-          assert len(page.lines) > 0, "real OCR returned no recognized lines"
-          assert page.text_field == "rec_texts", page.text_field
-          assert page.polygon_field in {"rec_polys", "dt_polys"}, page.polygon_field
+          assert len(page.lines) > 0
+          assert page.text_field == "rec_texts"
+          assert page.polygon_field in {"rec_polys", "dt_polys"}
           assert payload.get("_paddle_batch_ocr", {}).get("schema") == 1
+
           print(f"recognized_lines={len(page.lines)}")
           print(f"polygon_field={page.polygon_field}")
+          PY
+
+      - name: Run real two-worker PaddleX OCR
+        run: |
+          mkdir -p /tmp/ocr-parallel-input
+          for name in a b c d; do
+            cp /tmp/general_ocr_001.png "/tmp/ocr-parallel-input/page_${name}.png"
+          done
+
+          OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+          paddle-batch-ocr ocr /tmp/ocr-parallel-input \
+            --output /tmp/ocr-parallel-json \
+            --pipeline configs/paddlex/ocr-ci-small.yaml \
+            --device cpu \
+            --workers 2 \
+            --manifest /tmp/ocr-parallel-manifest.sqlite3 \
+            --json > /tmp/ocr-parallel-summary.json
+
+          cat /tmp/ocr-parallel-summary.json
+
+      - name: Validate two-worker OCR outputs
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from paddle_batch_ocr.manifest import ManifestStore
+          from paddle_batch_ocr.ocr_schema import parse_ocr_page
+
+          summary = json.loads(
+              Path("/tmp/ocr-parallel-summary.json").read_text(encoding="utf-8")
+          )
+          assert summary["success"] == 4, summary
+          assert summary["failed"] == 0, summary
+
+          sources = []
+          for stem in ("page_a", "page_b", "page_c", "page_d"):
+              path = Path("/tmp/ocr-parallel-json") / f"{stem}_result.json"
+              assert path.is_file(), path
+              page = parse_ocr_page(
+                  json.loads(path.read_text(encoding="utf-8"))
+              )
+              assert len(page.lines) > 0, stem
+              sources.append(Path("/tmp/ocr-parallel-input") / f"{stem}.png")
+
+          with ManifestStore(Path("/tmp/ocr-parallel-manifest.sqlite3")) as store:
+              workers = {
+                  store.get_job(source, "ocr").worker
+                  for source in sources
+              }
+
+          workers.discard(None)
+          assert len(workers) == 2, workers
+          print(f"parallel_real_ocr_workers={sorted(workers)}")
+          print("parallel_real_ocr=PASS")
           PY

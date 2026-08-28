@@ -41,33 +41,104 @@ def _require_fitz():
 
 
 def _validate_dpi(dpi: int) -> int:
-    if isinstance(dpi, bool) or not isinstance(dpi, int) or not 36 <= dpi <= 1200:
+    if (
+        isinstance(dpi, bool)
+        or not isinstance(dpi, int)
+        or not 36 <= dpi <= 1200
+    ):
         raise ValueError("dpi must be an integer between 36 and 1200")
     return dpi
 
 
-def _replace_directory(staging: Path, target: Path, *, overwrite: bool) -> None:
+def validate_rendered_pages(
+    pdf_path: Path,
+    output_dir: Path,
+) -> Tuple[Path, ...]:
+    """Validate that an existing page directory exactly covers the source PDF."""
+
+    fitz = _require_fitz()
+    source = Path(pdf_path).expanduser().resolve(strict=True)
+    if not source.is_file():
+        raise PdfRenderError(f"PDF source is not a file: {source}")
+
+    raw_target = Path(output_dir).expanduser()
+    if raw_target.is_symlink():
+        raise PdfRenderError(
+            f"refusing symlinked render output directory: {raw_target}"
+        )
+
+    target = raw_target.resolve(strict=True)
+    if not target.is_dir():
+        raise PdfRenderError(f"render output is not a directory: {target}")
+
+    with fitz.open(str(source)) as document:
+        page_count = document.page_count
+    if page_count < 1:
+        raise PdfRenderError(f"PDF contains no pages: {source}")
+
+    expected = tuple(
+        target / f"page_{index + 1:05d}.png"
+        for index in range(page_count)
+    )
+    for page in expected:
+        if page.is_symlink():
+            raise PdfRenderError(f"refusing symlinked rendered page: {page}")
+        if not page.is_file():
+            raise PdfRenderError(
+                f"render output is incomplete; missing page: {page.name}"
+            )
+
+    actual_numbered = {
+        path.name
+        for path in target.glob("page_*.png")
+        if path.is_file()
+    }
+    expected_names = {path.name for path in expected}
+    extras = sorted(actual_numbered - expected_names)
+    if extras:
+        preview = ", ".join(extras[:5])
+        suffix = "..." if len(extras) > 5 else ""
+        raise PdfRenderError(
+            "render output contains unexpected numbered page(s): "
+            f"{preview}{suffix}"
+        )
+
+    return expected
+
+
+def _replace_directory(
+    staging: Path,
+    target: Path,
+    *,
+    overwrite: bool,
+) -> None:
     """Publish a fully-rendered staging directory into its final location."""
 
     if target.exists():
         if not overwrite:
-            raise FileExistsError(f"render output directory already exists: {target}")
+            raise FileExistsError(
+                f"render output directory already exists: {target}"
+            )
         if not target.is_dir() or target.is_symlink():
-            raise PdfRenderError(f"refusing to replace non-directory output: {target}")
+            raise PdfRenderError(
+                f"refusing to replace non-directory output: {target}"
+            )
 
         backup = Path(
-            tempfile.mkdtemp(prefix=f".{target.name}.backup-", dir=str(target.parent))
+            tempfile.mkdtemp(
+                prefix=f".{target.name}.backup-",
+                dir=str(target.parent),
+            )
         )
         backup.rmdir()
         os.replace(str(target), str(backup))
+
         try:
             os.replace(str(staging), str(target))
         except BaseException:
             os.replace(str(backup), str(target))
             raise
         else:
-            # Publication succeeded. A stale backup is preferable to reporting a
-            # false execution failure after the new output is already live.
             shutil.rmtree(backup, ignore_errors=True)
     else:
         os.replace(str(staging), str(target))
@@ -80,35 +151,41 @@ def render_pdf(
     dpi: int = 144,
     overwrite: bool = False,
 ) -> RenderResult:
-    """Render every PDF page into a newly published PNG directory.
-
-    Pages are rendered into a hidden sibling staging directory first. The final
-    output directory is published only after every page succeeds, so callers do
-    not mistake a half-rendered directory for a completed stage.
-    """
+    """Render all pages transactionally into deterministic PNG filenames."""
 
     fitz = _require_fitz()
     dpi = _validate_dpi(dpi)
+
     source = Path(pdf_path).expanduser().resolve(strict=True)
     if not source.is_file():
         raise PdfRenderError(f"PDF source is not a file: {source}")
 
     raw_target = Path(output_dir).expanduser()
     if raw_target.is_symlink():
-        raise PdfRenderError(f"refusing symlinked render output directory: {raw_target}")
+        raise PdfRenderError(
+            f"refusing symlinked render output directory: {raw_target}"
+        )
+
     target = raw_target.resolve(strict=False)
     target.parent.mkdir(parents=True, exist_ok=True)
+
     if target.exists() and not overwrite:
-        raise FileExistsError(f"render output directory already exists: {target}")
+        raise FileExistsError(
+            f"render output directory already exists: {target}"
+        )
 
     staging = Path(
-        tempfile.mkdtemp(prefix=f".{target.name}.render-", dir=str(target.parent))
+        tempfile.mkdtemp(
+            prefix=f".{target.name}.render-",
+            dir=str(target.parent),
+        )
     )
-
     page_count = 0
+
     try:
         scale = dpi / 72.0
         matrix = fitz.Matrix(scale, scale)
+
         with fitz.open(str(source)) as document:
             page_count = document.page_count
             if page_count < 1:
@@ -116,13 +193,25 @@ def render_pdf(
 
             for page_index in range(page_count):
                 page = document.load_page(page_index)
-                pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-                page_path = staging / f"page_{page_index + 1:05d}.png"
-                pixmap.save(str(page_path))
+                pixmap = page.get_pixmap(
+                    matrix=matrix,
+                    alpha=False,
+                )
+                pixmap.save(
+                    str(staging / f"page_{page_index + 1:05d}.png")
+                )
 
-        published_paths = tuple(target / f"page_{i + 1:05d}.png" for i in range(page_count))
-        _replace_directory(staging, target, overwrite=overwrite)
+        published_paths = tuple(
+            target / f"page_{index + 1:05d}.png"
+            for index in range(page_count)
+        )
+        _replace_directory(
+            staging,
+            target,
+            overwrite=overwrite,
+        )
         staging = None  # type: ignore[assignment]
+
         return RenderResult(
             source=source,
             output_dir=target,
