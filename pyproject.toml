@@ -29,9 +29,10 @@ yaml = ["PyYAML>=6"]
 pdf = ["PyMuPDF>=1.26,<2", "Pillow>=11,<13"]
 # PaddlePaddle itself is deliberately NOT included here. CPU/GPU PaddlePaddle
 # wheels come from hardware-specific official indexes and must be installed
-# explicitly before this extra. The extra only supplies the current PaddleX OCR
-# stack around the already-selected PaddlePaddle runtime.
-ocr = ["paddlex[ocr]>=3.7,<4"]
+# explicitly before this extra. PaddleOCR 3.7 itself depends on the narrower
+# paddlex[ocr-core] extra for the General OCR runtime, so use the same boundary
+# instead of pulling unrelated table/formula/document-parsing dependencies.
+ocr = ["paddlex[ocr-core]>=3.7,<3.8"]
 
 [project.scripts]
 paddle-batch-ocr = "paddle_batch_ocr.cli:main"
