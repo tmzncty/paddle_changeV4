@@ -39,23 +39,37 @@ def _unwrap_result_mapping(data: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def result_mapping(result: object) -> Mapping[str, object]:
-    """Return a PaddleX/PaddleOCR result as a mapping without writing a file."""
+    """Return a PaddleX/PaddleOCR result as its documented export mapping.
 
-    if isinstance(result, Mapping):
-        data = result
-    else:
-        try:
-            json_value = getattr(result, "json")
-        except (AttributeError, RuntimeError) as exc:
-            raise PaddleXResultError("PaddleX result does not expose a json attribute") from exc
+    Current PaddleX ``OCRResult`` behaves like a Mapping *and* exposes a
+    documented ``json`` export. The raw Mapping contains runtime-only objects
+    such as ``vis_fonts`` and, depending on pipeline settings, image arrays.
+    PaddleX's ``OCRResult._to_json()`` intentionally excludes those fields.
 
+    Therefore prefer the Result ``json`` export whenever present, even if the
+    object also satisfies ``Mapping``. Plain historical dictionaries continue
+    to be accepted directly for compatibility and dependency-free tests.
+    """
+
+    try:
+        json_value = getattr(result, "json")
+    except (AttributeError, RuntimeError):
+        json_value = None
+
+    if json_value is not None:
         if callable(json_value):
             json_value = json_value()
         if not isinstance(json_value, Mapping):
             raise PaddleXResultError(
                 f"PaddleX result json must be a mapping, got {type(json_value).__name__}"
             )
-        data = json_value
+        data: Mapping[str, object] = json_value
+    elif isinstance(result, Mapping):
+        data = result
+    else:
+        raise PaddleXResultError(
+            "PaddleX result exposes neither a json mapping nor a Mapping interface"
+        )
 
     return _unwrap_result_mapping(data)
 
@@ -63,11 +77,10 @@ def result_mapping(result: object) -> Mapping[str, object]:
 def _json_safe(value: object, *, path: str = "result") -> object:
     """Convert PaddleX/NumPy values to ordinary JSON-compatible Python values.
 
-    PaddleX's in-memory Result mapping intentionally contains NumPy arrays and
-    NumPy scalar values. Its own ``save_to_json()`` converts those values before
-    serialization. This project validates and atomically publishes the result
-    itself, so perform the same conversion without importing NumPy into the core
-    package. Unknown values fail explicitly instead of being silently stringified.
+    PaddleX's exported JSON mapping can contain NumPy arrays/scalars before its
+    final serializer converts them. Normalize those values without importing
+    NumPy into the core package. Unknown values fail explicitly instead of being
+    silently stringified.
     """
 
     if value is None or isinstance(value, (str, int, float, bool)):
