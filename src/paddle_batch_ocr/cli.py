@@ -13,6 +13,7 @@ from .cache import clean_temp_cache
 from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
 from .manifest import ManifestStore
+from .safety import UnsafePathError
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
@@ -182,7 +183,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     try:
         args = parser.parse_args(list(argv) if argv is not None else None)
         return int(args.func(args))
-    except (ConfigError, FileNotFoundError, OSError) as exc:
+    except (ConfigError, UnsafePathError, FileNotFoundError, OSError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
 
