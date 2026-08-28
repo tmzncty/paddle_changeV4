@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paddle-batch-ocr"
+version = "0.1.0.dev0"
+description = "Safety-first orchestration for large-scale PaddleX/PaddleOCR document OCR workflows"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "GPL-3.0-only"}
+authors = [{name = "Tmzncty"}]
+keywords = ["ocr", "paddleocr", "paddlex", "pdf", "document-digitization"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]
+
+[project.scripts]
+paddle-batch-ocr = "paddle_batch_ocr.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
