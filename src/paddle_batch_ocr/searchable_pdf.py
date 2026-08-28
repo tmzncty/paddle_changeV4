@@ -1,0 +1,217 @@
+"""Searchable-PDF reconstruction using frozen legacy-v7 compatibility rules."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Mapping, Tuple
+
+from .io_utils import atomic_publish_file
+from .layout import legacy_text_rect, order_two_columns
+from .naming import find_matching_json
+from .ocr_schema import OcrSchemaError, parse_ocr_page
+from .pdf_render import PdfDependencyError
+
+
+_PAGE_RE = re.compile(r"page_(\d+)", re.IGNORECASE)
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+
+class SearchablePdfError(RuntimeError):
+    """Raised when searchable-PDF reconstruction cannot complete safely."""
+
+
+@dataclass(frozen=True)
+class SearchablePdfResult:
+    output_pdf: Path
+    page_count: int
+    text_line_count: int
+    image_paths: Tuple[Path, ...]
+    json_paths: Tuple[Path, ...]
+
+
+def _require_pdf_dependencies():
+    try:
+        import fitz  # type: ignore
+        from PIL import Image  # type: ignore
+    except ImportError as exc:
+        raise PdfDependencyError(
+            "searchable-PDF reconstruction requires PyMuPDF and Pillow; "
+            "install paddle-batch-ocr[pdf]"
+        ) from exc
+    return fitz, Image
+
+
+def discover_numbered_page_images(image_dir: Path) -> Tuple[Path, ...]:
+    """Discover one image for each ``page_<number>`` in numeric page order."""
+
+    root = Path(image_dir).expanduser().resolve(strict=True)
+    if not root.is_dir():
+        raise SearchablePdfError(f"image directory does not exist: {root}")
+
+    by_page: Dict[int, Path] = {}
+    for path in root.iterdir():
+        if not path.is_file() or path.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue
+        match = _PAGE_RE.search(path.name)
+        if not match:
+            continue
+        page_number = int(match.group(1))
+        previous = by_page.get(page_number)
+        if previous is not None:
+            raise SearchablePdfError(
+                f"multiple images claim page {page_number}: {previous.name}, {path.name}"
+            )
+        by_page[page_number] = path
+
+    if not by_page:
+        raise SearchablePdfError(f"no page_<number> images found in {root}")
+
+    return tuple(by_page[number] for number in sorted(by_page))
+
+
+def _load_ocr_json(path: Path) -> Mapping[str, object]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SearchablePdfError(f"cannot read OCR JSON {path}: {exc}") from exc
+    if not isinstance(data, Mapping):
+        raise SearchablePdfError(f"OCR JSON root must be an object: {path}")
+    return data
+
+
+def build_searchable_pdf(
+    image_dir: Path,
+    json_dir: Path,
+    output_pdf: Path,
+    *,
+    overwrite: bool = False,
+    y_offset: float = 0.0,
+    fontname: str = "china-s",
+) -> SearchablePdfResult:
+    """Build a searchable PDF from numbered page images and Paddle OCR JSON.
+
+    The text ordering, rectangle construction, font-size fit loop and baseline
+    offset intentionally preserve the documented version-7 behavior. Missing
+    page JSON is a hard error: a public execution command must not silently
+    emit an incomplete book.
+    """
+
+    fitz, Image = _require_pdf_dependencies()
+    images = discover_numbered_page_images(image_dir)
+    json_root = Path(json_dir).expanduser().resolve(strict=True)
+    if not json_root.is_dir():
+        raise SearchablePdfError(f"JSON directory does not exist: {json_root}")
+
+    target = Path(output_pdf).expanduser().resolve(strict=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"searchable PDF already exists: {target}")
+    if target.is_symlink():
+        raise SearchablePdfError(f"refusing symlinked output PDF: {target}")
+
+    matched_json: List[Path] = []
+    for image_path in images:
+        json_path = find_matching_json(image_path.name, json_root)
+        if json_path is None:
+            raise SearchablePdfError(f"no OCR JSON matches image {image_path.name}")
+        matched_json.append(json_path)
+
+    document = fitz.open()
+    line_count = 0
+    temp_path = None
+    try:
+        for image_path, json_path in zip(images, matched_json):
+            try:
+                ocr_page = parse_ocr_page(_load_ocr_json(json_path))
+            except OcrSchemaError as exc:
+                raise SearchablePdfError(f"invalid OCR JSON {json_path}: {exc}") from exc
+
+            with Image.open(str(image_path)) as image:
+                width, height = image.size
+            if width < 1 or height < 1:
+                raise SearchablePdfError(f"invalid image dimensions for {image_path}")
+
+            page = document.new_page(width=width, height=height)
+            page.insert_image(page.rect, filename=str(image_path))
+
+            for line in order_two_columns(ocr_page.lines, page_width=width):
+                legacy_rect = legacy_text_rect(line, y_offset=y_offset)
+                if legacy_rect.width <= 0 or legacy_rect.height <= 0:
+                    raise SearchablePdfError(
+                        f"non-positive legacy text rectangle in {json_path}: {legacy_rect}"
+                    )
+
+                rect = fitz.Rect(
+                    legacy_rect.x0,
+                    legacy_rect.y0,
+                    legacy_rect.x1,
+                    legacy_rect.y1,
+                )
+                fontsize = rect.height * 0.9
+                while fontsize > 1:
+                    text_width = fitz.get_text_length(
+                        line.text,
+                        fontname=fontname,
+                        fontsize=fontsize,
+                    )
+                    if text_width <= rect.width:
+                        break
+                    fontsize -= 1
+                fontsize = max(1.0, min(float(fontsize), 100.0))
+
+                insertion_point = fitz.Point(
+                    rect.x0,
+                    rect.y0 + (fontsize * 0.85),
+                )
+                page.insert_text(
+                    insertion_point,
+                    line.text,
+                    fontname=fontname,
+                    fontsize=fontsize,
+                    color=(0, 0, 0),
+                    fill=(1, 1, 1),
+                    render_mode=3,
+                )
+                line_count += 1
+
+        if document.page_count != len(images):
+            raise SearchablePdfError(
+                f"internal page-count mismatch: {document.page_count} != {len(images)}"
+            )
+
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(target.parent),
+            prefix=f".{target.name}.",
+            suffix=".tmp.pdf",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+
+        document.save(str(temp_path), garbage=4, deflate=True)
+        document.close()
+        document = None
+        atomic_publish_file(temp_path, target, overwrite=overwrite, fsync=True)
+        temp_path = None
+
+        return SearchablePdfResult(
+            output_pdf=target,
+            page_count=len(images),
+            text_line_count=line_count,
+            image_paths=images,
+            json_paths=tuple(matched_json),
+        )
+    finally:
+        if document is not None:
+            document.close()
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
