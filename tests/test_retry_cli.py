@@ -66,6 +66,29 @@ class TargetedRetryCliTests(unittest.TestCase):
             )
         return config_path, config, source, target, pipeline
 
+    def _empty_config(self, root: Path):
+        inputs = root / "inputs"
+        output = root / "output"
+        logs = root / "logs"
+        cache = root / "cache"
+        for path in (inputs, output, logs, cache):
+            path.mkdir()
+        config_path = root / "config.json"
+        manifest = logs / "manifest.sqlite3"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "input_sources": [{"path": str(inputs), "type": "image"}],
+                    "output_root": str(output),
+                    "log_dir": str(logs),
+                    "cache_root": str(cache),
+                    "manifest_path": str(manifest),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return config_path, manifest
+
     def test_json_dry_run_is_read_only_and_reports_eligible(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -173,26 +196,7 @@ class TargetedRetryCliTests(unittest.TestCase):
     def test_missing_manifest_returns_empty_dry_run_without_creating_db(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            inputs = root / "inputs"
-            output = root / "output"
-            logs = root / "logs"
-            cache = root / "cache"
-            for path in (inputs, output, logs, cache):
-                path.mkdir()
-            config_path = root / "config.json"
-            manifest = logs / "manifest.sqlite3"
-            config_path.write_text(
-                json.dumps(
-                    {
-                        "input_sources": [{"path": str(inputs), "type": "image"}],
-                        "output_root": str(output),
-                        "log_dir": str(logs),
-                        "cache_root": str(cache),
-                        "manifest_path": str(manifest),
-                    }
-                ),
-                encoding="utf-8",
-            )
+            config_path, manifest = self._empty_config(root)
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -210,6 +214,52 @@ class TargetedRetryCliTests(unittest.TestCase):
             self.assertEqual(payload["total_matching"], 0)
             self.assertEqual(payload["candidates"], [])
             self.assertFalse(manifest.exists())
+
+    def test_invalid_limit_is_rejected_even_without_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path, manifest = self._empty_config(root)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    main(
+                        [
+                            "manifest",
+                            "retry-failed",
+                            "--config",
+                            str(config_path),
+                            "--limit",
+                            "-1",
+                        ]
+                    )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("limit must be an integer", stderr.getvalue())
+            self.assertFalse(manifest.exists())
+
+    def test_symlinked_manifest_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path, manifest = self._empty_config(root)
+            real = root / "real.sqlite3"
+            real.write_bytes(b"not a database")
+            try:
+                manifest.symlink_to(real)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    main(
+                        [
+                            "manifest",
+                            "retry-failed",
+                            "--config",
+                            str(config_path),
+                        ]
+                    )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("symlinked manifest", stderr.getvalue())
 
 
 if __name__ == "__main__":
