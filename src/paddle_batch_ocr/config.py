@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
@@ -32,6 +33,23 @@ def _positive_int(value: object, *, name: str, default: int) -> int:
     return value
 
 
+def _bool_value(value: object, *, name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigError(f"{name} must be true or false")
+    return value
+
+
+def _device_value(value: object) -> str:
+    if not isinstance(value, str):
+        raise ConfigError("device must be a string")
+    device = value.lower()
+    if device in {"auto", "cpu", "gpu"} or re.fullmatch(r"gpu:\d+", device):
+        return device
+    raise ConfigError("device must be 'auto', 'cpu', 'gpu', or a GPU selector such as 'gpu:0'")
+
+
 @dataclass(frozen=True)
 class InputSource:
     path: Path
@@ -55,8 +73,7 @@ class RuntimeConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ConfigError(f"{name} must be an integer >= 1")
-        if self.device not in {"auto", "cpu", "gpu"} and not self.device.startswith("gpu:"):
-            raise ConfigError("device must be 'auto', 'cpu', 'gpu', or a GPU selector such as 'gpu:0'")
+        _device_value(self.device)
 
 
 @dataclass(frozen=True)
@@ -165,16 +182,12 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
     if not isinstance(raw_runtime, Mapping):
         raise ConfigError("runtime must be an object")
 
-    device = raw_runtime.get("device", data.get("device", "auto"))
-    if not isinstance(device, str):
-        raise ConfigError("device must be a string")
-
     runtime = RuntimeConfig(
         ocr_workers=_positive_int(raw_runtime.get("ocr_workers"), name="ocr_workers", default=1),
         pdf_prep_workers=_positive_int(raw_runtime.get("pdf_prep_workers"), name="pdf_prep_workers", default=1),
         render_workers=_positive_int(raw_runtime.get("render_workers"), name="render_workers", default=1),
         batch_size=_positive_int(raw_runtime.get("batch_size"), name="batch_size", default=1),
-        device=device.lower(),
+        device=_device_value(raw_runtime.get("device", data.get("device", "auto"))),
     )
 
     paddle_config_raw = data.get("paddle_config")
@@ -188,9 +201,11 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
         manifest_path=manifest_path,
         paddle_config=paddle_config,
         runtime=runtime,
-        delete_temp_images=bool(data.get("delete_temp_images", False)),
-        overwrite=bool(data.get("overwrite", False)),
-        resume=bool(data.get("resume", True)),
+        delete_temp_images=_bool_value(
+            data.get("delete_temp_images"), name="delete_temp_images", default=False
+        ),
+        overwrite=_bool_value(data.get("overwrite"), name="overwrite", default=False),
+        resume=_bool_value(data.get("resume"), name="resume", default=True),
     )
     config.validate_paths()
     return config
