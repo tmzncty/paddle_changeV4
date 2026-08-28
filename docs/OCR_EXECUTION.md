@@ -1,87 +1,63 @@
 # OCR execution layer
 
-The public OCR execution layer targets the current PaddleX 3.x pipeline API while
-keeping Paddle/PaddleX optional for the core package.
+公开 OCR execution layer 面向 PaddleX 3.x 当前 pipeline API，同时让 Paddle/PaddleX 继续作为可选运行时，而不是 core package 的强制依赖。
 
 ## Current upstream baseline
 
-At the time this document was written (2026-08):
+截至 2026-08，本项目按以下上游合同实现：
 
-- PaddleX latest release: 3.7.2;
-- PaddleOCR latest release: 3.7.0, including PP-OCRv6;
-- PaddleX 3.7 supports Python 3.8–3.13 and PaddlePaddle 3.0+;
-- current PaddleX documentation demonstrates PaddlePaddle 3.3.0 installation;
-- OCR pipelines are created with `paddlex.create_pipeline(pipeline="OCR")` or a
-  local pipeline YAML path;
-- current `create_pipeline` options include `device`, `engine`, `engine_config`,
-  `use_hpip`, and `hpi_config`;
-- pipeline prediction returns iterable Result objects; Result objects expose a
-  `json` mapping in addition to `save_to_json()`;
-- current OCR results expose `rec_polys` / `rec_texts` after recognition-score
-  filtering.
+- PaddleX 3.7.x pipeline API；
+- `paddlex.create_pipeline(pipeline="OCR")` 或本地 pipeline YAML；
+- `device`, `engine`, `use_hpip`, `hpi_config` 等当前参数；
+- prediction 返回 iterable Result；
+- OCR Result 提供官方 `.json` mapping；
+- 当前识别后 geometry/text 使用 `rec_polys / rec_texts`。
 
-Upstream references:
+参考：
 
-- https://paddlepaddle.github.io/PaddleX/3.7/en/installation/installation.html
-- https://paddlepaddle.github.io/PaddleX/3.7/en/pipeline_usage/instructions/pipeline_python_API.html
-- https://paddlepaddle.github.io/PaddleX/latest/en/pipeline_usage/tutorials/ocr_pipelines/OCR.html
-
-## CPU runtime compatibility note
-
-PaddlePaddle 3.3.0 currently has a known CPU inference regression in its
-PIR-to-oneDNN path. The failure is typically:
-
-```text
-NotImplementedError: (Unimplemented)
-ConvertPirAttribute2RuntimeAttribute not support
-[pir::ArrayAttribute<pir::DoubleAttribute>]
-```
-
-This is an upstream PaddlePaddle framework bug rather than a PaddleX result or
-pipeline-adapter error. PaddleX issue #4970 identifies the same failure as a
-Paddle framework issue, and PaddlePaddle issue #77340 documents downgrading to
-PaddlePaddle 3.2.2 as the temporary workaround.
-
-Accordingly, the public CPU smoke test currently uses:
-
-```text
-Python 3.12
-PaddlePaddle 3.2.2 CPU
-PaddleX 3.7.x
-```
-
-This is a tested compatibility path, not a claim that PaddlePaddle 3.3.x is
-unsupported in every environment. The smoke should move back to a current
-3.3.x release once the upstream CPU regression is fixed and verified.
-
-Upstream bug references:
-
-- https://github.com/PaddlePaddle/Paddle/issues/77340
-- https://github.com/PaddlePaddle/PaddleX/issues/4970
+- PaddleX 3.7 installation docs
+- PaddleX pipeline Python API
+- PaddleX General OCR tutorial
+- PaddleX 3.7 `OCRResult._to_json()` source contract
 
 ## Installation policy
 
-PaddlePaddle is deliberately not a normal project dependency because CPU and GPU
-runtimes use hardware-specific official wheel indexes.
+PaddlePaddle 不作为普通项目 dependency。原因是 CPU/GPU wheel 需要按硬件和官方索引选择。
 
-Install the appropriate PaddlePaddle runtime first according to the current
-PaddleX/PaddlePaddle documentation. Then install the OCR integration layer:
+先安装合适的 PaddlePaddle runtime，再安装项目 OCR extra：
 
 ```bash
 python -m pip install '.[ocr]'
 ```
 
-The `ocr` extra currently provides `paddlex[ocr]>=3.7,<4`; it does not choose a
-PaddlePaddle CPU/GPU runtime for you.
+当前 extra：
 
-For CPU environments affected by the 3.3.x oneDNN regression, the currently
-validated workaround is:
-
-```bash
-python -m pip install paddlepaddle==3.2.2 \
-  -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-python -m pip install '.[ocr]'
+```text
+paddlex[ocr-core]>=3.7,<3.8
 ```
+
+使用 `ocr-core` 而不是完整 `paddlex[ocr]`，因为这里只需要 General OCR 的检测/识别核心，不主动引入公式、表格、文档解析等更大依赖面。
+
+## Validated CPU matrix
+
+公共 GitHub Actions 已完成真实模型 smoke：
+
+| Component | Validated value |
+| --- | --- |
+| OS | Ubuntu 24.04 |
+| Python | 3.12.14 |
+| PaddlePaddle | 3.2.2 CPU |
+| PaddleX | 3.7.2 |
+| Detection | PP-OCRv6_small_det |
+| Recognition | PP-OCRv6_small_rec |
+
+测试使用 PaddleX 官方 General OCR demo image，并真实下载模型、执行 CPU 推理、保存结果、重新读取结果。
+
+### PaddlePaddle 3.3.0 CPU note
+
+PaddlePaddle 3.3.0 在当前 CPU oneDNN/PIR 路径存在已知上游回归；真实 CI 曾触发同类 `ConvertPirAttribute2RuntimeAttribute` / oneDNN 错误。上游 issue 给出的临时 workaround 是使用 3.2.2，因此公共 CPU smoke 暂时固定 3.2.2。
+
+这不是项目宣称“3.2.2 永远是最佳版本”。上游修复后应重新验证并更新矩阵。
 
 ## Serial execution command
 
@@ -90,11 +66,13 @@ paddle-batch-ocr ocr INPUT \
   --output json/
 ```
 
-`INPUT` may be one image or a directory scanned recursively. Relative directory
-structure is preserved under the output root and files are written as
-`<stem>_result.json`.
+`INPUT` 可以是一张图片，也可以是递归扫描的图片目录。目录模式保留相对目录结构，输出名稳定为：
 
-Useful options:
+```text
+<stem>_result.json
+```
+
+常用参数：
 
 ```bash
 paddle-batch-ocr ocr images/ --output json/ --device cpu
@@ -104,94 +82,111 @@ paddle-batch-ocr ocr images/ --output json/ --engine paddle_static
 paddle-batch-ocr ocr images/ --output json/ --manifest work/manifest.sqlite3
 ```
 
-The first public execution contract is intentionally serial. One pipeline is
-created lazily and reused for every image that actually needs inference. A full
-resume that only adopts/skips valid existing JSON does not initialize the model.
-If pipeline initialization itself fails, that failure is cached for the batch so
-the runner does not repeatedly initialize or redownload the same broken runtime
-for every image.
+当前执行层故意串行。一个 PaddleX pipeline 惰性初始化，并被所有真正需要 inference 的图片复用；完整 resume 如果只需要 adopt/skip 现有合法 JSON，则不会初始化模型。
 
-## Minimal OCR pipeline for smoke / clean scans
+## PaddleX Result boundary
 
-The upstream default `OCR` pipeline initializes optional document-orientation,
-unwarping and text-line-orientation modules even when those modules are disabled
-at prediction time. For a pure detection+recognition smoke test this causes
-unnecessary model downloads.
+### Official `.json` first
 
-`configs/paddlex/ocr-ci-small.yaml` therefore disables those optional modules at
-pipeline initialization and uses `PP-OCRv6_small_det` + `PP-OCRv6_small_rec`.
-It follows the current PaddleX 3.7 pipeline configuration schema and keeps the
-smoke focused on the core OCR path.
+真实 PaddleX `OCRResult` 同时具有 Mapping 行为和官方 `.json` 导出接口。运行时 Mapping 还包含 `vis_fonts`、原始图像等只服务于可视化的对象，因此项目必须：
 
-This file is a CI/reference profile, not a universal accuracy recommendation.
-Production users can provide their own PaddleX pipeline YAML through
-`--pipeline`.
+1. 只要 Result 暴露官方 `.json`，优先使用它；
+2. 只有普通历史 dict 才直接按 Mapping 读取；
+3. 不复制 PaddleX runtime 内部字典当作稳定 JSON schema。
 
-## Prediction-time optional modules
+PaddleX 3.7 的 `OCRResult._to_json()` 自己定义了稳定导出字段，因此 `vis_fonts` 等 runtime visualization object 不进入项目输出。
 
-For the project’s historical plain OCR use case, these modules are disabled by
-default at prediction time:
+### NumPy values
 
-```text
-use_doc_orientation_classify = False
-use_doc_unwarping = False
-use_textline_orientation = False
-```
+官方 Result mapping 中 geometry / scores 可以包含 NumPy ndarray / scalar。core package 不为此强依赖 NumPy，而是在边界使用 array-like `.tolist()` / scalar-like `.item()` 转成普通 Python JSON 值；未知对象仍明确报错，不做 `str()` 降级。
 
-They can be explicitly enabled with:
+## Result geometry compatibility
 
-```bash
---use-doc-orientation-classify
---use-doc-unwarping
---use-textline-orientation
-```
-
-## Result normalization
-
-Current PaddleOCR 3.x can produce more detection boxes than recognized text
-entries because recognition-score filtering happens after detection. The public
-adapter therefore prefers:
+当前 PaddleOCR 3.x 在 recognition confidence filtering 后，最终识别文本数量可能少于原始 detection 数量。因此 public adapter 优先：
 
 ```text
 rec_polys + rec_texts
 ```
 
-when both are present. Historical repository JSON continues to support:
+历史仓库继续兼容：
 
 ```text
 dt_polys + rec_texts
 dt_polys + rec_text
 ```
 
-This prevents filtered detection boxes from being paired with the wrong text.
+这样不会把被过滤掉的 detection box 与错误文本重新配对。
 
-PaddleX Result objects are read through their documented `json` attribute. A
-common outer `{"res": {...}}` envelope is unwrapped before schema validation.
-The original result fields are preserved and a small `_paddle_batch_ocr`
-provenance record is added before atomic JSON publication.
+## Atomic publication
+
+每张图片的 Result 在发布前先：
+
+1. 读取官方 `.json` / historical mapping；
+2. 解析 OCR schema；
+3. 转成 JSON-safe values；
+4. 添加 `_paddle_batch_ocr` provenance；
+5. 写同目录临时文件；
+6. flush + fsync；
+7. atomic replace/publish。
+
+默认不覆盖已有合法 JSON。
 
 ## Resume and failure semantics
 
-- output JSON is atomically published and no-overwrite by default;
-- valid pre-existing JSON is adopted during normal resume;
-- if a manifest already knows a source and its size/mtime changes, the old
-  result is stale and is not silently adopted;
-- stale existing output requires explicit overwrite;
-- one image failure is recorded without aborting every later image;
-- the command exits non-zero when any task fails;
-- symlinked input/output paths and symlinked manifest database targets are
-  rejected at discovery/publication boundaries;
-- `--json` keeps stdout machine-readable; PaddleX/model-download chatter is
-  temporarily routed to stderr for OCR execution only.
+- valid pre-existing JSON 可在 resume 时 adopted；
+- manifest 已认识 source 且 size/mtime 变化时，旧 result 被视为 stale；
+- stale existing output 需要显式 overwrite；
+- 一张图片失败会记录状态，但不会阻断整批后续图片；
+- 任一 task failed 时 CLI 最终返回非零；
+- pipeline 初始化失败在一批任务中只尝试一次，避免成千上万图片反复下载/初始化同一个坏环境；
+- symlinked input/output/manifest boundary 被拒绝。
 
-## Concurrency
+## Strict `--json` stdout contract
 
-The current public engine does **not** consume `ocr_workers > 1` yet. This is
-intentional. The next concurrency milestone will add a process initializer so
-each worker creates exactly one PaddleX pipeline and then executes the same task
-contract defined here.
+PaddleX/Paddle 模型下载通常有 Python 日志，但 Paddle/oneDNN 还可能从原生 C/C++ 直接写进 OS file descriptor 1。单纯 `contextlib.redirect_stdout()` 只能改 Python `sys.stdout`，无法保证：
 
-Batch sizes for OCR submodules belong in the current PaddleX pipeline YAML (for
-example the TextRecognition module's `batch_size`). The historical global
-`OCR_BATCH_SIZE` / `hpi_params` approach is not treated as the current PaddleX
-API contract.
+```bash
+paddle-batch-ocr ocr ... --json > summary.json
+```
+
+得到纯 JSON。
+
+因此 `--json` OCR 模式在**第三方 inference 执行期间**临时把 process fd 1 重定向到 fd 2：
+
+```text
+Paddle/PaddleX/oneDNN chatter -> stderr
+project summary              -> stdout
+```
+
+执行结束后恢复 fd 1，再输出项目自己的唯一 JSON summary。core tests 还会在子进程里直接 `os.write(1, ...)` 模拟 native runtime，确保不是只隔离 Python `print()`。
+
+真实 CPU smoke 进一步要求 `summary.json` 可以直接 `json.loads()`。
+
+## Real CPU smoke gate
+
+当前 CI gate 会真实：
+
+1. 安装 PaddlePaddle 3.2.2 CPU；
+2. 安装 `.[ocr]` -> PaddleX 3.7.x OCR core；
+3. 下载 PaddleX 官方 General OCR demo image；
+4. 使用 `configs/paddlex/ocr-ci-small.yaml`；
+5. 下载 PP-OCRv6 small det/rec；
+6. 通过项目 CLI 执行 OCR；
+7. 验证 summary JSON 为 strict JSON；
+8. 打开落盘 `<stem>_result.json`；
+9. 重新通过 `parse_ocr_page()`；
+10. 要求 recognized lines > 0；
+11. 验证 `rec_texts` / polygon field / provenance。
+
+因此该 execution layer 已有真实 PaddleX CPU 证据，不只依赖 fake Result 测试。
+
+## Concurrency next
+
+当前 public OCR engine **不消费 `ocr_workers > 1`**。下一阶段才会加入 process worker pool，并要求：
+
+- 每个 worker initializer 创建恰好一个 pipeline；
+- 明确 multiprocessing start method；
+- 明确 GPU device assignment；
+- 复用完全相同的单任务执行 / schema / manifest / atomic publication contract。
+
+在这之前不会把 legacy 的 16/32/64 高并发默认值搬进新 public API。
