@@ -93,12 +93,13 @@ def render_pdf(
     if not source.is_file():
         raise PdfRenderError(f"PDF source is not a file: {source}")
 
-    target = Path(output_dir).expanduser().resolve(strict=False)
+    raw_target = Path(output_dir).expanduser()
+    if raw_target.is_symlink():
+        raise PdfRenderError(f"refusing symlinked render output directory: {raw_target}")
+    target = raw_target.resolve(strict=False)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not overwrite:
         raise FileExistsError(f"render output directory already exists: {target}")
-    if target.is_symlink():
-        raise PdfRenderError(f"refusing symlinked render output directory: {target}")
 
     staging = Path(
         tempfile.mkdtemp(prefix=f".{target.name}.render-", dir=str(target.parent))
