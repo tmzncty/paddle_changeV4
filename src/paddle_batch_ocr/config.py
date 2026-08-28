@@ -65,6 +65,7 @@ class ProjectConfig:
     output_root: Path
     log_dir: Path
     cache_root: Path
+    manifest_path: Path
     paddle_config: Optional[Path] = None
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     delete_temp_images: bool = False
@@ -77,6 +78,7 @@ class ProjectConfig:
             "output_root": self.output_root,
             "log_dir": self.log_dir,
             "cache_root": self.cache_root,
+            "manifest_path": self.manifest_path,
         }
 
         for source_root in roots:
@@ -133,6 +135,17 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
         if required not in data:
             raise ConfigError(f"{required} is required")
 
+    output_root = _as_path(data["output_root"], base_dir=base_dir)
+    log_dir = _as_path(data["log_dir"], base_dir=base_dir)
+    cache_root = _as_path(data["cache_root"], base_dir=base_dir)
+
+    manifest_raw = data.get("manifest_path")
+    manifest_path = (
+        _as_path(manifest_raw, base_dir=base_dir)
+        if manifest_raw not in (None, "")
+        else (log_dir / "manifest.sqlite3").resolve(strict=False)
+    )
+
     raw_runtime = data.get("runtime", {})
     if not isinstance(raw_runtime, Mapping):
         raise ConfigError("runtime must be an object")
@@ -154,9 +167,10 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
 
     config = ProjectConfig(
         input_sources=tuple(sources),
-        output_root=_as_path(data["output_root"], base_dir=base_dir),
-        log_dir=_as_path(data["log_dir"], base_dir=base_dir),
-        cache_root=_as_path(data["cache_root"], base_dir=base_dir),
+        output_root=output_root,
+        log_dir=log_dir,
+        cache_root=cache_root,
+        manifest_path=manifest_path,
         paddle_config=paddle_config,
         runtime=runtime,
         delete_temp_images=bool(data.get("delete_temp_images", False)),
