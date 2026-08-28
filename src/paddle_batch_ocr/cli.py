@@ -198,6 +198,9 @@ def command_ocr(args: argparse.Namespace) -> int:
         manifest_path=Path(args.manifest) if args.manifest else None,
         resume=not args.no_resume,
         overwrite=args.overwrite,
+        use_doc_orientation_classify=args.use_doc_orientation_classify,
+        use_doc_unwarping=args.use_doc_unwarping,
+        use_textline_orientation=args.use_textline_orientation,
     )
     payload = {
         "success": result.success_count,
@@ -299,6 +302,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--use-hpip",
         action="store_true",
         help="Enable PaddleX high-performance inference plugin",
+    )
+    ocr.add_argument(
+        "--use-doc-orientation-classify",
+        action="store_true",
+        help="Enable document orientation classification (disabled by default)",
+    )
+    ocr.add_argument(
+        "--use-doc-unwarping",
+        action="store_true",
+        help="Enable document image unwarping (disabled by default)",
+    )
+    ocr.add_argument(
+        "--use-textline-orientation",
+        action="store_true",
+        help="Enable text-line orientation classification (disabled by default)",
     )
     ocr.add_argument("--manifest", help="Optional SQLite manifest path")
     ocr.add_argument(
