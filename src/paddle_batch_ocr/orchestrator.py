@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import InputSource, ProjectConfig
 from .manifest import ManifestStore
@@ -44,6 +44,26 @@ class ProjectRunResult:
     @property
     def failed_count(self) -> int:
         return sum(item.status == "failed" for item in self.items)
+
+
+def _render_execution_profile(dpi: int) -> Dict[str, object]:
+    return {
+        "schema": 1,
+        "kind": "pdf_render",
+        "dpi": dpi,
+        "format": "png",
+        "alpha": False,
+    }
+
+
+def _searchable_execution_profile() -> Dict[str, object]:
+    return {
+        "schema": 1,
+        "kind": "searchable_pdf",
+        "fontname": "china-s",
+        "y_offset": 0.0,
+        "layout": "legacy-v7",
+    }
 
 
 def _discover_source_files(source: InputSource) -> Tuple[Path, ...]:
@@ -113,18 +133,35 @@ def _run_render_stage(
 ) -> Tuple[str, Tuple[Path, ...]]:
     """Run or safely adopt the render stage for one PDF."""
 
+    profile = _render_execution_profile(dpi)
     with ManifestStore(config.manifest_path) as store:
         previous = store.get_job(pdf_path, "render")
-        needs_run = store.needs_run(pdf_path, "render")
+
+        # First-time adoption can prove the existing output path and content
+        # shape, but cannot prove which historical DPI/profile produced it.
+        if pages_dir.exists() and config.resume and previous is None:
+            try:
+                pages = validate_fn(pdf_path, pages_dir)
+            except Exception:
+                if not config.overwrite:
+                    raise
+            else:
+                store.mark_success(
+                    pdf_path,
+                    "render",
+                    result_path=pages_dir,
+                )
+                return "skipped", pages
+
+        needs_run = store.needs_run(
+            pdf_path,
+            "render",
+            intended_result_path=pages_dir,
+            execution_profile=profile,
+        )
 
         if pages_dir.exists():
-            can_adopt = (
-                config.resume
-                and (
-                    previous is None
-                    or not needs_run
-                )
-            )
+            can_adopt = config.resume and not needs_run
             if can_adopt:
                 try:
                     pages = validate_fn(pdf_path, pages_dir)
@@ -149,6 +186,8 @@ def _run_render_stage(
             pdf_path,
             "render",
             worker=f"pid-{os.getpid()}",
+            intended_result_path=pages_dir,
+            execution_profile=profile,
         )
         try:
             result = render_fn(
@@ -183,9 +222,35 @@ def _run_searchable_stage(
 ) -> str:
     """Run/adopt searchable-PDF output while respecting upstream OCR changes."""
 
+    profile = _searchable_execution_profile()
     with ManifestStore(config.manifest_path) as store:
         previous = store.get_job(pdf_path, "searchable_pdf")
-        needs_run = store.needs_run(pdf_path, "searchable_pdf")
+
+        if (
+            output_pdf.exists()
+            and config.resume
+            and previous is None
+            and not force_rebuild
+        ):
+            try:
+                validate_fn(output_pdf, expected_page_count)
+            except Exception:
+                if not config.overwrite:
+                    raise
+            else:
+                store.mark_success(
+                    pdf_path,
+                    "searchable_pdf",
+                    result_path=output_pdf,
+                )
+                return "skipped"
+
+        needs_run = store.needs_run(
+            pdf_path,
+            "searchable_pdf",
+            intended_result_path=output_pdf,
+            execution_profile=profile,
+        )
 
         if output_pdf.exists():
             if force_rebuild:
@@ -195,13 +260,7 @@ def _run_searchable_stage(
                         f"enable overwrite to rebuild it: {output_pdf}"
                     )
             else:
-                can_adopt = (
-                    config.resume
-                    and (
-                        previous is None
-                        or not needs_run
-                    )
-                )
+                can_adopt = config.resume and not needs_run
                 if can_adopt:
                     try:
                         validate_fn(output_pdf, expected_page_count)
@@ -226,6 +285,8 @@ def _run_searchable_stage(
             pdf_path,
             "searchable_pdf",
             worker=f"pid-{os.getpid()}",
+            intended_result_path=output_pdf,
+            execution_profile=profile,
         )
         try:
             result = searchable_fn(
