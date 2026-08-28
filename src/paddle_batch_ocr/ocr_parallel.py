@@ -32,6 +32,7 @@ class ParallelWorkerConfig:
     engine: Optional[str]
     use_hpip: Optional[bool]
     predict_kwargs: Dict[str, object]
+    execution_profile: Dict[str, object]
     overwrite: bool
     manifest_path: Optional[str]
     create_pipeline_fn: Optional[Callable[..., object]] = None
@@ -121,6 +122,8 @@ def _execute_parallel_task(task: OcrTask) -> OcrTaskResult:
                 "ocr",
                 worker=f"pid-{os.getpid()}",
                 device=config.device,
+                intended_result_path=task.output_json,
+                execution_profile=config.execution_profile,
             )
 
         predict_one_to_json(
@@ -163,6 +166,7 @@ def _prepare_tasks(
     manifest_path: Optional[Path],
     resume: bool,
     overwrite: bool,
+    execution_profile: Dict[str, object],
 ) -> Tuple[List[Tuple[int, OcrTask]], Dict[int, OcrTaskResult]]:
     """Resolve resume/stale/existing-output semantics before spawning workers."""
 
@@ -176,8 +180,37 @@ def _prepare_tasks(
                 previous = (
                     store.get_job(task.source, "ocr") if store is not None else None
                 )
+
+                # Existing files with no manifest history can be adopted, but
+                # their original execution profile is unknowable and must stay NULL.
+                if (
+                    task.output_json.exists()
+                    and resume
+                    and store is not None
+                    and previous is None
+                ):
+                    _validate_existing_result(task.output_json)
+                    store.mark_success(
+                        task.source,
+                        "ocr",
+                        result_path=task.output_json,
+                    )
+                    prepared[index] = OcrTaskResult(
+                        source=task.source,
+                        output_json=task.output_json,
+                        status="skipped",
+                    )
+                    continue
+
                 needs_run = (
-                    store.needs_run(task.source, "ocr") if store is not None else True
+                    store.needs_run(
+                        task.source,
+                        "ocr",
+                        intended_result_path=task.output_json,
+                        execution_profile=execution_profile,
+                    )
+                    if store is not None
+                    else True
                 )
 
                 if task.output_json.exists():
@@ -185,7 +218,6 @@ def _prepare_tasks(
                         resume
                         and (
                             store is None
-                            or previous is None
                             or not needs_run
                         )
                     )
@@ -248,6 +280,7 @@ def run_ocr_parallel(
     resume: bool,
     overwrite: bool,
     predict_kwargs: Dict[str, object],
+    execution_profile: Dict[str, object],
     create_pipeline_fn: Optional[Callable[..., object]] = None,
     start_method: str = "spawn",
 ) -> OcrBatchResult:
@@ -272,6 +305,7 @@ def run_ocr_parallel(
         manifest_path=manifest_path,
         resume=resume,
         overwrite=overwrite,
+        execution_profile=execution_profile,
     )
 
     if not pending:
@@ -285,6 +319,7 @@ def run_ocr_parallel(
         engine=engine,
         use_hpip=use_hpip,
         predict_kwargs=dict(predict_kwargs),
+        execution_profile=dict(execution_profile),
         overwrite=overwrite,
         manifest_path=(
             os.fspath(Path(manifest_path).expanduser())
