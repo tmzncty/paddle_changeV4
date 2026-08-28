@@ -40,6 +40,12 @@ class ManifestReport:
         }
 
 
+@dataclass(frozen=True)
+class ManifestJobPage:
+    total_matching: int
+    jobs: Tuple[Dict[str, object], ...]
+
+
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     raw = Path(path).expanduser()
     if raw.is_symlink():
@@ -116,11 +122,12 @@ def _job_filters(
 
 
 def read_manifest_report(path: Path) -> ManifestReport:
-    """Aggregate status, stage and error information entirely in SQLite."""
+    """Aggregate a single transactionally consistent manifest snapshot."""
 
     connection = _readonly_connection(path)
     try:
         _ensure_jobs_table(connection)
+        connection.execute("BEGIN")
 
         status_rows = connection.execute(
             "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status ORDER BY status"
@@ -216,7 +223,7 @@ def count_manifest_jobs(
         connection.close()
 
 
-def query_manifest_jobs(
+def query_manifest_job_page(
     path: Path,
     *,
     status: Optional[str] = None,
@@ -224,8 +231,8 @@ def query_manifest_jobs(
     error_class: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-) -> Tuple[Dict[str, object], ...]:
-    """Return deterministic filtered manifest rows without mutating the DB."""
+) -> ManifestJobPage:
+    """Read count and page rows from one consistent SQLite snapshot."""
 
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
         raise ValueError("limit must be an integer between 1 and 10000")
@@ -244,16 +251,48 @@ def query_manifest_jobs(
         + where
         + " ORDER BY source_path, stage LIMIT ? OFFSET ?"
     )
-    params.extend((limit, offset))
 
     connection = _readonly_connection(path)
     try:
         _ensure_jobs_table(connection)
-        rows = connection.execute(query, tuple(params)).fetchall()
-        return tuple(dict(row) for row in rows)
+        connection.execute("BEGIN")
+        total_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM jobs" + where,
+            tuple(params),
+        ).fetchone()
+        total_matching = int(total_row["count"]) if total_row is not None else 0
+
+        page_params = list(params)
+        page_params.extend((limit, offset))
+        rows = connection.execute(query, tuple(page_params)).fetchall()
+        return ManifestJobPage(
+            total_matching=total_matching,
+            jobs=tuple(dict(row) for row in rows),
+        )
     except sqlite3.Error as exc:
         raise ManifestReportingError(
             f"cannot query manifest jobs: {exc}"
         ) from exc
     finally:
         connection.close()
+
+
+def query_manifest_jobs(
+    path: Path,
+    *,
+    status: Optional[str] = None,
+    stage: Optional[str] = None,
+    error_class: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> Tuple[Dict[str, object], ...]:
+    """Backward-compatible rows-only wrapper around the snapshot page query."""
+
+    return query_manifest_job_page(
+        path,
+        status=status,
+        stage=stage,
+        error_class=error_class,
+        limit=limit,
+        offset=offset,
+    ).jobs
