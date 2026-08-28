@@ -394,8 +394,15 @@ class ManifestStore:
         error: BaseException,
         *,
         duration_s: Optional[float] = None,
+        intended_result_path: Optional[Path] = None,
+        execution_profile: Optional[Mapping[str, object]] = None,
     ) -> JobRecord:
-        record = self.ensure_job(source, stage)
+        record = self.ensure_job(
+            source,
+            stage,
+            intended_result_path=intended_result_path,
+            execution_profile=execution_profile,
+        )
         self._conn.execute(
             """
             UPDATE jobs
