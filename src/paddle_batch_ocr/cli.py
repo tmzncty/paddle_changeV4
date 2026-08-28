@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,11 @@ from .cache import clean_temp_cache
 from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
 from .manifest import ManifestStore
+from .manifest_reporting import (
+    ManifestReportingError,
+    query_manifest_jobs,
+    read_manifest_report,
+)
 from .ocr_runner import OcrRunnerError, run_ocr_batch
 from .orchestrator import ProjectRunError, run_project
 from .pdf_render import PdfRenderError, render_pdf
@@ -22,6 +29,22 @@ from .stdio import redirect_process_stdout_to_stderr
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
+MANIFEST_CSV_FIELDS = (
+    "source_path",
+    "stage",
+    "source_size",
+    "source_mtime_ns",
+    "status",
+    "result_path",
+    "retry_count",
+    "error_class",
+    "error_message",
+    "worker",
+    "device",
+    "started_at",
+    "finished_at",
+    "duration_s",
+)
 
 
 def _count_files(root: Path, kind: str) -> int:
@@ -61,6 +84,12 @@ def _format_bytes(value: Optional[int]) -> str:
 
 def _load_optional_config(path: Optional[str]) -> Optional[ProjectConfig]:
     return load_config(path) if path else None
+
+
+def _manifest_may_exist(path: Path) -> bool:
+    """Treat symlinks as present so the reporting layer can reject them."""
+
+    return path.is_symlink() or path.exists()
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -148,6 +177,127 @@ def command_manifest_status(args: argparse.Namespace) -> int:
             print(f"{status:8} {count:8d}")
         print(f"total    {payload['total']:8d}")
 
+    return 0
+
+
+def command_manifest_report(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    exists = _manifest_may_exist(config.manifest_path)
+
+    if exists:
+        report = read_manifest_report(config.manifest_path)
+        report_payload = report.as_dict()
+    else:
+        report_payload = {
+            "total": 0,
+            "status": {},
+            "stages": {},
+            "error_classes": {},
+            "retry_total": 0,
+            "duration_total_s": 0.0,
+        }
+
+    payload = {
+        "manifest_path": str(config.manifest_path),
+        "exists": exists,
+        **report_payload,
+    }
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"manifest: {payload['manifest_path']}")
+    print(f"exists: {payload['exists']}")
+    print(f"total: {payload['total']}")
+
+    status_counts = payload["status"]
+    if status_counts:
+        print("status:")
+        for name, count in sorted(status_counts.items()):
+            print(f"  {name:8} {count:8d}")
+
+    stage_counts = payload["stages"]
+    if stage_counts:
+        print("stages:")
+        for stage, counts in sorted(stage_counts.items()):
+            rendered = " ".join(
+                f"{name}={count}"
+                for name, count in sorted(counts.items())
+            )
+            print(f"  {stage}: {rendered}")
+
+    error_counts = payload["error_classes"]
+    if error_counts:
+        print("errors:")
+        for name, count in error_counts.items():
+            print(f"  {name}: {count}")
+
+    print(f"retry_total: {payload['retry_total']}")
+    print(f"duration_total_s: {payload['duration_total_s']:.3f}")
+    return 0
+
+
+def command_manifest_jobs(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    exists = _manifest_may_exist(config.manifest_path)
+
+    if exists:
+        rows = query_manifest_jobs(
+            config.manifest_path,
+            status=args.status,
+            stage=args.stage,
+            error_class=args.error_class,
+            limit=args.limit,
+            offset=args.offset,
+        )
+    else:
+        rows = ()
+
+    filters = {
+        "status": args.status,
+        "stage": args.stage,
+        "error_class": args.error_class,
+        "limit": args.limit,
+        "offset": args.offset,
+    }
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "manifest_path": str(config.manifest_path),
+                    "exists": exists,
+                    "filters": filters,
+                    "count": len(rows),
+                    "jobs": list(rows),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.csv:
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=MANIFEST_CSV_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        print(buffer.getvalue(), end="")
+        return 0
+
+    print(f"manifest: {config.manifest_path}")
+    print(f"exists: {exists}")
+    print(f"count: {len(rows)}")
+    for row in rows:
+        error = ""
+        if row.get("error_class"):
+            error = f" {row['error_class']}: {row.get('error_message') or ''}"
+        print(
+            f"{str(row['status']):8} {str(row['stage']):14} "
+            f"retry={int(row['retry_count']):3d} {row['source_path']}{error}"
+        )
     return 0
 
 
@@ -423,10 +573,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     manifest = subparsers.add_parser("manifest", help="Inspect persistent job state")
     manifest_subparsers = manifest.add_subparsers(dest="manifest_command", required=True)
+
     status = manifest_subparsers.add_parser("status", help="Show manifest status counts")
     status.add_argument("--config", required=True)
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=command_manifest_status)
+
+    report = manifest_subparsers.add_parser(
+        "report",
+        help="Read aggregate stage/status/error statistics without mutating the manifest",
+    )
+    report.add_argument("--config", required=True)
+    report.add_argument("--json", action="store_true")
+    report.set_defaults(func=command_manifest_report)
+
+    jobs = manifest_subparsers.add_parser(
+        "jobs",
+        help="List filtered manifest jobs through a read-only connection",
+    )
+    jobs.add_argument("--config", required=True)
+    jobs.add_argument(
+        "--status",
+        choices=("pending", "running", "success", "failed"),
+    )
+    jobs.add_argument("--stage")
+    jobs.add_argument("--error-class")
+    jobs.add_argument("--limit", type=int, default=100)
+    jobs.add_argument("--offset", type=int, default=0)
+    output_group = jobs.add_mutually_exclusive_group()
+    output_group.add_argument("--json", action="store_true")
+    output_group.add_argument("--csv", action="store_true")
+    jobs.set_defaults(func=command_manifest_jobs)
 
     return parser
 
@@ -439,6 +616,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     except (
         ConfigError,
         UnsafePathError,
+        ManifestReportingError,
         OcrRunnerError,
         ProjectRunError,
         PdfRenderError,
