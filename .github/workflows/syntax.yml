@@ -94,10 +94,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install official PaddlePaddle CPU runtime
+      # PaddlePaddle 3.3.0 currently has a known CPU oneDNN/PIR regression
+      # (Paddle #77340 / PaddleX #4970). 3.2.2 is the upstream-documented
+      # workaround until that framework regression is fixed.
+      - name: Install known-good PaddlePaddle CPU runtime
         run: |
           python -m pip install --upgrade pip
-          python -m pip install paddlepaddle==3.3.0 \
+          python -m pip install paddlepaddle==3.2.2 \
             -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
 
       - name: Install PaddleX OCR integration
@@ -125,8 +128,10 @@ jobs:
         run: |
           paddle-batch-ocr ocr /tmp/general_ocr_001.png \
             --output /tmp/ocr-json \
+            --pipeline configs/paddlex/ocr-ci-small.yaml \
             --device cpu \
-            --json | tee /tmp/ocr-summary.json
+            --json > /tmp/ocr-summary.json
+          cat /tmp/ocr-summary.json
 
       - name: Validate produced OCR JSON through project schema
         env:
