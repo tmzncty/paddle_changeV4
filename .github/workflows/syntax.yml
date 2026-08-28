@@ -57,6 +57,8 @@ jobs:
           paddle-batch-ocr --version
           paddle-batch-ocr doctor --json
           paddle-batch-ocr manifest status --config examples/config.json --json
+          paddle-batch-ocr manifest report --config examples/config.json --json
+          paddle-batch-ocr manifest jobs --config examples/config.json --json
           paddle-batch-ocr render --help
           paddle-batch-ocr searchable-pdf --help
           paddle-batch-ocr ocr --help
@@ -148,20 +150,23 @@ jobs:
             --output /tmp/ocr-json \
             --pipeline configs/paddlex/ocr-ci-small.yaml \
             --device cpu \
+            --manifest /tmp/ocr-serial-manifest.sqlite3 \
             --json > /tmp/ocr-summary.json
           ocr_rc=$?
           set -e
           cat /tmp/ocr-summary.json
           exit "$ocr_rc"
 
-      - name: Validate serial OCR JSON through project schema
+      - name: Validate serial OCR JSON and provenance
         env:
           PYTHONPATH: src:.
         run: |
           python - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
 
+          from paddle_batch_ocr.manifest import ManifestStore
           from paddle_batch_ocr.ocr_schema import parse_ocr_page
 
           summary = json.loads(
@@ -170,7 +175,9 @@ jobs:
           assert summary["success"] == 1, summary
           assert summary["failed"] == 0, summary
 
+          source = Path("/tmp/general_ocr_001.png")
           output = Path("/tmp/ocr-json/general_ocr_001_result.json")
+          pipeline = Path("configs/paddlex/ocr-ci-small.yaml").resolve()
           assert output.is_file(), output
 
           payload = json.loads(output.read_text(encoding="utf-8"))
@@ -180,8 +187,24 @@ jobs:
           assert page.polygon_field in {"rec_polys", "dt_polys"}
           assert payload.get("_paddle_batch_ocr", {}).get("schema") == 1
 
+          expected_sha = hashlib.sha256(pipeline.read_bytes()).hexdigest()
+          with ManifestStore(Path("/tmp/ocr-serial-manifest.sqlite3")) as store:
+              record = store.get_job(source, "ocr")
+
+          assert record is not None
+          assert record.status == "success"
+          assert record.intended_result_path == str(output.resolve())
+          profile = record.execution_profile
+          assert profile["schema"] == 2, profile
+          assert profile["kind"] == "paddlex_ocr", profile
+          assert profile["device"] == "cpu", profile
+          assert profile["pipeline"]["type"] == "file", profile
+          assert profile["pipeline"]["path"] == str(pipeline), profile
+          assert profile["pipeline"]["sha256"] == expected_sha, profile
+
           print(f"recognized_lines={len(page.lines)}")
           print(f"polygon_field={page.polygon_field}")
+          print("serial_manifest_provenance=PASS")
           PY
 
       - name: Run real two-worker PaddleX OCR
@@ -202,11 +225,12 @@ jobs:
 
           cat /tmp/ocr-parallel-summary.json
 
-      - name: Validate two-worker OCR outputs
+      - name: Validate two-worker OCR outputs and provenance
         env:
           PYTHONPATH: src:.
         run: |
           python - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
 
@@ -219,7 +243,10 @@ jobs:
           assert summary["success"] == 4, summary
           assert summary["failed"] == 0, summary
 
+          pipeline = Path("configs/paddlex/ocr-ci-small.yaml").resolve()
+          expected_sha = hashlib.sha256(pipeline.read_bytes()).hexdigest()
           sources = []
+          outputs = {}
           for stem in ("page_a", "page_b", "page_c", "page_d"):
               path = Path("/tmp/ocr-parallel-json") / f"{stem}_result.json"
               assert path.is_file(), path
@@ -227,16 +254,29 @@ jobs:
                   json.loads(path.read_text(encoding="utf-8"))
               )
               assert len(page.lines) > 0, stem
-              sources.append(Path("/tmp/ocr-parallel-input") / f"{stem}.png")
+              source = Path("/tmp/ocr-parallel-input") / f"{stem}.png"
+              sources.append(source)
+              outputs[source] = path
 
           with ManifestStore(Path("/tmp/ocr-parallel-manifest.sqlite3")) as store:
-              workers = {
-                  store.get_job(source, "ocr").worker
+              records = {
+                  source: store.get_job(source, "ocr")
                   for source in sources
               }
 
+          workers = {record.worker for record in records.values()}
           workers.discard(None)
           assert len(workers) == 2, workers
+          for source, record in records.items():
+              assert record is not None
+              assert record.status == "success"
+              assert record.intended_result_path == str(outputs[source].resolve())
+              profile = record.execution_profile
+              assert profile["schema"] == 2, profile
+              assert profile["device"] == "cpu", profile
+              assert profile["pipeline"]["type"] == "file", profile
+              assert profile["pipeline"]["sha256"] == expected_sha, profile
+
           print(f"parallel_real_ocr_workers={sorted(workers)}")
-          print("parallel_real_ocr=PASS")
+          print("parallel_real_ocr_provenance=PASS")
           PY

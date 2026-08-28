@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import InputSource, ProjectConfig
 from .manifest import ManifestStore
@@ -44,6 +44,33 @@ class ProjectRunResult:
     @property
     def failed_count(self) -> int:
         return sum(item.status == "failed" for item in self.items)
+
+
+def _render_execution_profile(dpi: int) -> Dict[str, object]:
+    return {
+        "schema": 1,
+        "kind": "pdf_render",
+        "dpi": dpi,
+        "format": "png",
+        "alpha": False,
+    }
+
+
+def _searchable_execution_profile(
+    pages_dir: Path,
+    ocr_dir: Path,
+    expected_page_count: int,
+) -> Dict[str, object]:
+    return {
+        "schema": 2,
+        "kind": "searchable_pdf",
+        "fontname": "china-s",
+        "y_offset": 0.0,
+        "layout": "legacy-v7",
+        "images_dir": os.fspath(Path(pages_dir).expanduser().resolve(strict=False)),
+        "ocr_json_dir": os.fspath(Path(ocr_dir).expanduser().resolve(strict=False)),
+        "expected_page_count": expected_page_count,
+    }
 
 
 def _discover_source_files(source: InputSource) -> Tuple[Path, ...]:
@@ -102,6 +129,29 @@ def _pdf_artifact_root(
     ).resolve(strict=False)
 
 
+def _record_stage_failure(
+    store: ManifestStore,
+    source: Path,
+    stage: str,
+    error: BaseException,
+    *,
+    intended_result_path: Path,
+    execution_profile: Dict[str, object],
+) -> None:
+    try:
+        store.mark_failure(
+            source,
+            stage,
+            error,
+            intended_result_path=intended_result_path,
+            execution_profile=execution_profile,
+        )
+    except Exception:
+        # Preserve the original stage exception rather than hiding it behind a
+        # secondary manifest-write failure.
+        pass
+
+
 def _run_render_stage(
     config: ProjectConfig,
     pdf_path: Path,
@@ -113,19 +163,14 @@ def _run_render_stage(
 ) -> Tuple[str, Tuple[Path, ...]]:
     """Run or safely adopt the render stage for one PDF."""
 
+    profile = _render_execution_profile(dpi)
     with ManifestStore(config.manifest_path) as store:
-        previous = store.get_job(pdf_path, "render")
-        needs_run = store.needs_run(pdf_path, "render")
+        try:
+            previous = store.get_job(pdf_path, "render")
 
-        if pages_dir.exists():
-            can_adopt = (
-                config.resume
-                and (
-                    previous is None
-                    or not needs_run
-                )
-            )
-            if can_adopt:
+            # First-time adoption can prove the existing output path and content
+            # shape, but cannot prove which historical DPI/profile produced it.
+            if pages_dir.exists() and config.resume and previous is None:
                 try:
                     pages = validate_fn(pdf_path, pages_dir)
                 except Exception:
@@ -139,34 +184,65 @@ def _run_render_stage(
                     )
                     return "skipped", pages
 
-            if not config.overwrite:
-                raise ProjectRunError(
-                    "render output already exists or is stale; "
-                    f"enable overwrite: {pages_dir}"
-                )
+            needs_run = store.needs_run(
+                pdf_path,
+                "render",
+                intended_result_path=pages_dir,
+                execution_profile=profile,
+            )
 
-        store.mark_started(
-            pdf_path,
-            "render",
-            worker=f"pid-{os.getpid()}",
-        )
-        try:
+            if pages_dir.exists():
+                can_adopt = config.resume and not needs_run
+                if can_adopt:
+                    try:
+                        pages = validate_fn(pdf_path, pages_dir)
+                    except Exception:
+                        if not config.overwrite:
+                            raise
+                    else:
+                        store.mark_success(
+                            pdf_path,
+                            "render",
+                            result_path=pages_dir,
+                        )
+                        return "skipped", pages
+
+                if not config.overwrite:
+                    raise ProjectRunError(
+                        "render output already exists or is stale; "
+                        f"enable overwrite: {pages_dir}"
+                    )
+
+            store.mark_started(
+                pdf_path,
+                "render",
+                worker=f"pid-{os.getpid()}",
+                intended_result_path=pages_dir,
+                execution_profile=profile,
+            )
             result = render_fn(
                 pdf_path,
                 pages_dir,
                 dpi=dpi,
                 overwrite=config.overwrite,
             )
-        except Exception as exc:
-            store.mark_failure(pdf_path, "render", exc)
-            raise
 
-        store.mark_success(
-            pdf_path,
-            "render",
-            result_path=result.output_dir,
-        )
-        return "success", result.page_paths
+            store.mark_success(
+                pdf_path,
+                "render",
+                result_path=result.output_dir,
+            )
+            return "success", result.page_paths
+        except Exception as exc:
+            _record_stage_failure(
+                store,
+                pdf_path,
+                "render",
+                exc,
+                intended_result_path=pages_dir,
+                execution_profile=profile,
+            )
+            raise
 
 
 def _run_searchable_stage(
@@ -183,67 +259,100 @@ def _run_searchable_stage(
 ) -> str:
     """Run/adopt searchable-PDF output while respecting upstream OCR changes."""
 
+    profile = _searchable_execution_profile(
+        pages_dir,
+        ocr_dir,
+        expected_page_count,
+    )
     with ManifestStore(config.manifest_path) as store:
-        previous = store.get_job(pdf_path, "searchable_pdf")
-        needs_run = store.needs_run(pdf_path, "searchable_pdf")
-
-        if output_pdf.exists():
-            if force_rebuild:
-                if not config.overwrite:
-                    raise ProjectRunError(
-                        "searchable PDF is stale because OCR produced new results; "
-                        f"enable overwrite to rebuild it: {output_pdf}"
-                    )
-            else:
-                can_adopt = (
-                    config.resume
-                    and (
-                        previous is None
-                        or not needs_run
-                    )
-                )
-                if can_adopt:
-                    try:
-                        validate_fn(output_pdf, expected_page_count)
-                    except Exception:
-                        if not config.overwrite:
-                            raise
-                    else:
-                        store.mark_success(
-                            pdf_path,
-                            "searchable_pdf",
-                            result_path=output_pdf,
-                        )
-                        return "skipped"
-
-                if not config.overwrite:
-                    raise ProjectRunError(
-                        "searchable PDF already exists or is stale; "
-                        f"enable overwrite: {output_pdf}"
-                    )
-
-        store.mark_started(
-            pdf_path,
-            "searchable_pdf",
-            worker=f"pid-{os.getpid()}",
-        )
         try:
+            previous = store.get_job(pdf_path, "searchable_pdf")
+
+            if (
+                output_pdf.exists()
+                and config.resume
+                and previous is None
+                and not force_rebuild
+            ):
+                try:
+                    validate_fn(output_pdf, expected_page_count)
+                except Exception:
+                    if not config.overwrite:
+                        raise
+                else:
+                    store.mark_success(
+                        pdf_path,
+                        "searchable_pdf",
+                        result_path=output_pdf,
+                    )
+                    return "skipped"
+
+            needs_run = store.needs_run(
+                pdf_path,
+                "searchable_pdf",
+                intended_result_path=output_pdf,
+                execution_profile=profile,
+            )
+
+            if output_pdf.exists():
+                if force_rebuild:
+                    if not config.overwrite:
+                        raise ProjectRunError(
+                            "searchable PDF is stale because OCR produced new results; "
+                            f"enable overwrite to rebuild it: {output_pdf}"
+                        )
+                else:
+                    can_adopt = config.resume and not needs_run
+                    if can_adopt:
+                        try:
+                            validate_fn(output_pdf, expected_page_count)
+                        except Exception:
+                            if not config.overwrite:
+                                raise
+                        else:
+                            store.mark_success(
+                                pdf_path,
+                                "searchable_pdf",
+                                result_path=output_pdf,
+                            )
+                            return "skipped"
+
+                    if not config.overwrite:
+                        raise ProjectRunError(
+                            "searchable PDF already exists or is stale; "
+                            f"enable overwrite: {output_pdf}"
+                        )
+
+            store.mark_started(
+                pdf_path,
+                "searchable_pdf",
+                worker=f"pid-{os.getpid()}",
+                intended_result_path=output_pdf,
+                execution_profile=profile,
+            )
             result = searchable_fn(
                 pages_dir,
                 ocr_dir,
                 output_pdf,
                 overwrite=config.overwrite,
             )
-        except Exception as exc:
-            store.mark_failure(pdf_path, "searchable_pdf", exc)
-            raise
 
-        store.mark_success(
-            pdf_path,
-            "searchable_pdf",
-            result_path=result.output_pdf,
-        )
-        return "success"
+            store.mark_success(
+                pdf_path,
+                "searchable_pdf",
+                result_path=result.output_pdf,
+            )
+            return "success"
+        except Exception as exc:
+            _record_stage_failure(
+                store,
+                pdf_path,
+                "searchable_pdf",
+                exc,
+                intended_result_path=output_pdf,
+                execution_profile=profile,
+            )
+            raise
 
 
 def _run_pdf_document(

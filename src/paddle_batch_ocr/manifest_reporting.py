@@ -6,7 +6,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import quote
 
 
@@ -25,6 +25,8 @@ class ManifestReport:
     error_classes: Mapping[str, int]
     retry_total: int
     duration_total_s: float
+    intended_result_count: int
+    execution_profile_count: int
 
     def as_dict(self) -> Dict[str, object]:
         return {
@@ -37,6 +39,10 @@ class ManifestReport:
             "error_classes": dict(self.error_classes),
             "retry_total": self.retry_total,
             "duration_total_s": self.duration_total_s,
+            "provenance": {
+                "intended_result_count": self.intended_result_count,
+                "execution_profile_count": self.execution_profile_count,
+            },
         }
 
 
@@ -65,8 +71,6 @@ def _readonly_connection(path: Path) -> sqlite3.Connection:
             f"manifest path is not a file: {resolved}"
         )
 
-    # URI mode=ro ensures inspection cannot create schema, WAL files, or mutate
-    # task state even if a future query accidentally contains a write.
     uri = "file:{}?mode=ro".format(
         quote(os.fspath(resolved), safe="/")
     )
@@ -82,12 +86,11 @@ def _readonly_connection(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _ensure_jobs_table(connection: sqlite3.Connection) -> None:
-    row = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
-    ).fetchone()
-    if row is None:
+def _jobs_columns(connection: sqlite3.Connection) -> Set[str]:
+    rows = connection.execute("PRAGMA table_info(jobs)").fetchall()
+    if not rows:
         raise ManifestReportingError("manifest does not contain a jobs table")
+    return {str(row["name"]) for row in rows}
 
 
 def _job_filters(
@@ -126,7 +129,7 @@ def read_manifest_report(path: Path) -> ManifestReport:
 
     connection = _readonly_connection(path)
     try:
-        _ensure_jobs_table(connection)
+        columns = _jobs_columns(connection)
         connection.execute("BEGIN")
 
         status_rows = connection.execute(
@@ -164,13 +167,28 @@ def read_manifest_report(path: Path) -> ManifestReport:
             for row in error_rows
         }
 
+        intended_expr = (
+            "SUM(CASE WHEN intended_result_path IS NOT NULL THEN 1 ELSE 0 END)"
+            if "intended_result_path" in columns
+            else "0"
+        )
+        profile_expr = (
+            "SUM(CASE WHEN execution_profile_json IS NOT NULL THEN 1 ELSE 0 END)"
+            if "execution_profile_json" in columns
+            else "0"
+        )
         totals = connection.execute(
             """
             SELECT COUNT(*) AS total,
                    COALESCE(SUM(retry_count), 0) AS retry_total,
-                   COALESCE(SUM(duration_s), 0.0) AS duration_total_s
+                   COALESCE(SUM(duration_s), 0.0) AS duration_total_s,
+                   {intended_expr} AS intended_result_count,
+                   {profile_expr} AS execution_profile_count
             FROM jobs
-            """
+            """.format(
+                intended_expr=intended_expr,
+                profile_expr=profile_expr,
+            )
         ).fetchone()
         if totals is None:
             raise ManifestReportingError("cannot aggregate manifest totals")
@@ -182,6 +200,8 @@ def read_manifest_report(path: Path) -> ManifestReport:
             error_classes=error_classes,
             retry_total=int(totals["retry_total"]),
             duration_total_s=float(totals["duration_total_s"]),
+            intended_result_count=int(totals["intended_result_count"]),
+            execution_profile_count=int(totals["execution_profile_count"]),
         )
     except sqlite3.Error as exc:
         raise ManifestReportingError(
@@ -207,7 +227,7 @@ def count_manifest_jobs(
     )
     connection = _readonly_connection(path)
     try:
-        _ensure_jobs_table(connection)
+        _jobs_columns(connection)
         row = connection.execute(
             "SELECT COUNT(*) AS count FROM jobs" + where,
             tuple(params),
@@ -244,17 +264,32 @@ def query_manifest_job_page(
         stage=stage,
         error_class=error_class,
     )
-    query = (
-        "SELECT source_path, stage, source_size, source_mtime_ns, status, "
-        "result_path, retry_count, error_class, error_message, worker, device, "
-        "started_at, finished_at, duration_s FROM jobs"
-        + where
-        + " ORDER BY source_path, stage LIMIT ? OFFSET ?"
-    )
 
     connection = _readonly_connection(path)
     try:
-        _ensure_jobs_table(connection)
+        columns = _jobs_columns(connection)
+        intended_select = (
+            "intended_result_path"
+            if "intended_result_path" in columns
+            else "NULL AS intended_result_path"
+        )
+        profile_select = (
+            "execution_profile_json"
+            if "execution_profile_json" in columns
+            else "NULL AS execution_profile_json"
+        )
+        query = (
+            "SELECT source_path, stage, source_size, source_mtime_ns, status, "
+            "result_path, retry_count, error_class, error_message, worker, device, "
+            "started_at, finished_at, duration_s, "
+            + intended_select
+            + ", "
+            + profile_select
+            + " FROM jobs"
+            + where
+            + " ORDER BY source_path, stage LIMIT ? OFFSET ?"
+        )
+
         connection.execute("BEGIN")
         total_row = connection.execute(
             "SELECT COUNT(*) AS count FROM jobs" + where,

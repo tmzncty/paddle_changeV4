@@ -108,6 +108,9 @@ paddle-batch-ocr scan --config examples/config.json
 
 paddle-batch-ocr manifest status --config examples/config.json
 paddle-batch-ocr manifest status --config examples/config.json --json
+paddle-batch-ocr manifest report --config examples/config.json --json
+paddle-batch-ocr manifest jobs --config examples/config.json --status failed --json
+paddle-batch-ocr manifest jobs --config examples/config.json --status failed --csv > failed.csv
 
 # dry-run
 paddle-batch-ocr cache clean --config examples/config.json
@@ -115,6 +118,8 @@ paddle-batch-ocr cache clean --config examples/config.json
 # explicit destructive action
 paddle-batch-ocr cache clean --config examples/config.json --execute
 ```
+
+`manifest report/jobs` 使用 read-only SQLite connection，不会为了查看状态创建或迁移数据库。详细语义见 [`docs/MANIFEST_OPERATIONS.md`](docs/MANIFEST_OPERATIONS.md)。
 
 ### PDF -> PNG
 
@@ -178,6 +183,9 @@ OCR 的公共合同包括：
 - resume / stale preflight 在任务进入 worker pool 前完成；
 - 已有合法 JSON 可以 adopt，不需要模型初始化；
 - source size/mtime 变化使旧 manifest result 失效；
+- 对已有可信 execution profile 的任务，result target / profile 变化也会使旧 success 失效；
+- 本地 pipeline YAML 使用绝对路径 + size + SHA-256 指纹，因此同一路径内容变化可以被识别；
+- 历史 adopt 的结果不会被伪造为“由当前 pipeline 生成”，未知 profile 保持 unknown；
 - JSON 先验证 schema，再 temp + fsync + atomic publish；
 - 默认 no-overwrite；
 - 单页失败不会吞掉其他任务；
@@ -291,7 +299,9 @@ SQLite manifest 以 `(source_path, stage)` 为键，记录：
 
 - source size / mtime fingerprint；
 - `pending / running / success / failed`；
-- result path；
+- successfully published `result_path`；
+- intended result path（失败时也保留）；
+- canonical execution profile；
 - retry count；
 - error class / message；
 - worker / device；
@@ -304,7 +314,11 @@ SQLite manifest 以 `(source_path, stage)` 为键，记录：
 - render：逐 PDF stage 记录；
 - searchable-PDF：逐 PDF stage 记录。
 
+writer 打开旧 manifest 时会向后兼容迁移 provenance 列；历史 success 可以从 `result_path` 安全回填 intended target，但不会猜测历史 execution profile。只读 report/jobs 可以直接查看未迁移旧库而不修改它。
+
 一个重要依赖规则是：**只要这一轮 OCR 真正产生了新 JSON，已有 searchable PDF 就不能仅凭源 PDF fingerprint 被 adopt。** 在已有 searchable PDF 的情况下，需要显式 `overwrite=true` 才允许重建，避免“新 OCR JSON + 旧文本层 PDF”这种跨 stage 不一致。
+
+更完整的 manifest / provenance / reporting 说明见 [`docs/MANIFEST_OPERATIONS.md`](docs/MANIFEST_OPERATIONS.md)。
 
 ## OCR Result compatibility
 
@@ -331,7 +345,7 @@ SQLite manifest 以 `(source_path, stage)` 为键，记录：
 
 CI 使用当前 major 的 official Actions，并缓存 pip downloads 与 `~/.paddlex/official_models`。PR branch 不再同时触发“branch push + PR”两份昂贵 OCR；main 由 push 验证，feature branch 由 PR 验证。
 
-真实 two-worker gate 会运行 4 个输入，并从 manifest 验证出现两个不同 worker PID，而不是仅检查 `--workers 2` 参数被接受。
+真实 serial / two-worker gates 不只检查 OCR 输出：还验证 manifest 的 intended target、本地 pipeline YAML SHA-256 execution profile，以及 two-worker PID 数量。因此 provenance 也有真实 PaddleX CPU 证据。
 
 ## Legacy implementation index
 
@@ -356,10 +370,11 @@ legacy 数字文件名只是迭代痕迹，不是稳定 API。
 
 下一阶段重点：
 
-- GPU worker device map + manual/self-hosted validation；
+- 基于 manifest provenance 的 targeted retry：先 dry-run，再 explicit execute；
+- retry 时校验本地 pipeline 历史 SHA-256，未知 profile 不猜；
 - retry policy 与更细 failure classes；
 - 对 render / searchable stage 建立更完整 dependency fingerprints；
-- 从 manifest 定向重跑失败项；
+- GPU worker device map + manual/self-hosted validation；
 - PDF geometry golden fixtures（中文长文本、旋转、双栏）；
 - benchmark / worker-thread tuning guide；
 - 在新 CLI 覆盖和真实数据对比充分后归档 legacy。

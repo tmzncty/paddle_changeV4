@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -76,6 +77,72 @@ def _validate_unique_outputs(tasks: List[OcrTask]) -> None:
                 f"{previous} and {task.source} -> {task.output_json}"
             )
         owners[key] = task.source
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pipeline_profile_value(pipeline_ref: PipelineRef) -> Dict[str, object]:
+    """Describe a named pipeline or fingerprint a local pipeline config file."""
+
+    if isinstance(pipeline_ref, os.PathLike):
+        raw = os.fspath(pipeline_ref)
+        candidate = Path(raw).expanduser()
+        must_be_file = True
+    else:
+        raw = str(pipeline_ref)
+        candidate = Path(raw).expanduser()
+        must_be_file = False
+
+    if must_be_file or candidate.is_file():
+        try:
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise OcrRunnerError(
+                f"local PaddleX pipeline config does not exist: {candidate}"
+            ) from exc
+        if not resolved.is_file():
+            raise OcrRunnerError(
+                f"local PaddleX pipeline config is not a file: {resolved}"
+            )
+        stat = resolved.stat()
+        return {
+            "type": "file",
+            "path": os.fspath(resolved),
+            "size": stat.st_size,
+            "sha256": _sha256_file(resolved),
+        }
+
+    return {
+        "type": "name",
+        "value": raw,
+    }
+
+
+def build_ocr_execution_profile(
+    *,
+    pipeline_ref: PipelineRef,
+    device: Optional[str],
+    engine: Optional[str],
+    use_hpip: Optional[bool],
+    predict_kwargs: Dict[str, object],
+) -> Dict[str, object]:
+    """Return result-affecting OCR settings in a stable JSON-compatible form."""
+
+    return {
+        "schema": 2,
+        "kind": "paddlex_ocr",
+        "pipeline": _pipeline_profile_value(pipeline_ref),
+        "device": device or "auto",
+        "engine": engine,
+        "use_hpip": use_hpip,
+        "predict": dict(predict_kwargs),
+    }
 
 
 def discover_ocr_tasks(input_path: Path, output_dir: Path) -> Tuple[OcrTask, ...]:
@@ -173,6 +240,13 @@ def run_ocr_batch(
         use_doc_unwarping=use_doc_unwarping,
         use_textline_orientation=use_textline_orientation,
     )
+    execution_profile = build_ocr_execution_profile(
+        pipeline_ref=pipeline_ref,
+        device=device,
+        engine=engine,
+        use_hpip=use_hpip,
+        predict_kwargs=predict_kwargs,
+    )
 
     if workers > 1:
         from .ocr_parallel import run_ocr_parallel
@@ -188,6 +262,7 @@ def run_ocr_batch(
             resume=resume,
             overwrite=overwrite,
             predict_kwargs=predict_kwargs,
+            execution_profile=execution_profile,
             create_pipeline_fn=create_pipeline_fn,
             start_method="spawn",
         )
@@ -227,8 +302,39 @@ def run_ocr_batch(
                 previous_record = (
                     store.get_job(task.source, "ocr") if store is not None else None
                 )
+
+                # First-time adoption of an existing result must not claim that
+                # the current execution profile created an historical file.
+                if (
+                    task.output_json.exists()
+                    and resume
+                    and store is not None
+                    and previous_record is None
+                ):
+                    _validate_existing_result(task.output_json)
+                    store.mark_success(
+                        task.source,
+                        "ocr",
+                        result_path=task.output_json,
+                    )
+                    results.append(
+                        OcrTaskResult(
+                            source=task.source,
+                            output_json=task.output_json,
+                            status="skipped",
+                        )
+                    )
+                    continue
+
                 manifest_needs_run = (
-                    store.needs_run(task.source, "ocr") if store is not None else True
+                    store.needs_run(
+                        task.source,
+                        "ocr",
+                        intended_result_path=task.output_json,
+                        execution_profile=execution_profile,
+                    )
+                    if store is not None
+                    else True
                 )
 
                 if task.output_json.exists():
@@ -236,7 +342,6 @@ def run_ocr_batch(
                         resume
                         and (
                             store is None
-                            or previous_record is None
                             or not manifest_needs_run
                         )
                     )
@@ -275,6 +380,8 @@ def run_ocr_batch(
                         "ocr",
                         worker=f"pid-{os.getpid()}",
                         device=device or "auto",
+                        intended_result_path=task.output_json,
+                        execution_profile=execution_profile,
                     )
 
                 predict_one_to_json(
@@ -302,7 +409,13 @@ def run_ocr_batch(
             except Exception as exc:
                 if store is not None:
                     try:
-                        store.mark_failure(task.source, "ocr", exc)
+                        store.mark_failure(
+                            task.source,
+                            "ocr",
+                            exc,
+                            intended_result_path=task.output_json,
+                            execution_profile=execution_profile,
+                        )
                     except Exception:
                         pass
                 results.append(
