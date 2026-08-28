@@ -51,6 +51,8 @@ paddle-batch-ocr doctor
 paddle-batch-ocr scan --config CONFIG
 paddle-batch-ocr cache clean --config CONFIG
 paddle-batch-ocr manifest status --config CONFIG
+paddle-batch-ocr manifest report --config CONFIG
+paddle-batch-ocr manifest jobs --config CONFIG
 paddle-batch-ocr render INPUT.pdf --output DIR
 paddle-batch-ocr ocr INPUT --output DIR
 paddle-batch-ocr searchable-pdf --images DIR --ocr-json DIR --output FILE.pdf
@@ -61,6 +63,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] core does not force Paddle/CUDA
 - [x] `pdf` / `yaml` / `ocr` extras
 - [x] machine-readable JSON modes
+- [x] manifest jobs CSV export
 - [x] fd-level native stdout isolation for OCR/run JSON modes
 - [x] config-driven project orchestration
 - [x] deterministic project artifact layout
@@ -85,6 +88,8 @@ paddle-batch-ocr run --config CONFIG
 - [x] symlink safety
 - [x] strict JSON stdout
 - [x] real PP-OCRv6 CPU smoke
+- [x] execution profile provenance for actual OCR attempts
+- [x] local pipeline YAML content fingerprint (SHA-256)
 
 ### CPU process workers
 
@@ -98,6 +103,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] cross-Python fake spawn test
 - [x] real two-worker PaddleX CPU smoke
 - [x] public safety boundary: multi-worker requires explicit CPU device
+- [x] worker/preflight failure provenance preservation
 - [ ] GPU worker/device map
 - [ ] automatic retry policy
 - [ ] richer damaged-image / empty-result / model-failure statuses
@@ -118,6 +124,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] Python 3.9 / 3.12 real PDF smoke
 - [x] existing-render validation for resume
 - [x] render stage manifest integration
+- [x] render intended-result / DPI execution profile provenance
 - [ ] colorspace / alpha / format config
 - [ ] segmented huge-PDF recovery
 
@@ -134,6 +141,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] existing PDF page-count validation for resume
 - [x] searchable-PDF stage manifest integration
 - [x] downstream invalidation when OCR actually produces new results
+- [x] searchable target + pages/OCR input-directory execution provenance
 - [ ] richer dependency fingerprint beyond source-PDF mtime/size
 - [ ] Chinese long-text / rotation / column geometry goldens
 - [ ] legacy vs corrected geometry mode
@@ -157,10 +165,23 @@ paddle-batch-ocr run --config CONFIG
 - [x] render stage lifecycle
 - [x] searchable-PDF stage lifecycle
 - [x] prevent searchable adoption after upstream OCR changed
+- [x] read-only `manifest report` aggregate statistics
+- [x] read-only filtered/paged `manifest jobs`
+- [x] JSON / CSV job export
+- [x] snapshot-consistent reporting during active writes
+- [x] intended-result provenance
+- [x] canonical execution-profile provenance
+- [x] backward-compatible in-place manifest migration
+- [x] old-schema read-only reporting without migration
+- [x] profile-aware stale detection only when historical profile is known
+- [x] local OCR pipeline config content fingerprint
 - [ ] full dependency graph / content fingerprints
 - [ ] targeted rerun of failed items
-- [ ] JSON / CSV aggregate statistics
-- [ ] overall progress without re-scanning all sources
+- [ ] attempt/event history for every retry
+- [ ] stale-running detection / recovery policy
+- [ ] large-manifest query indexing + benchmark
+
+当前 provenance 设计刻意不把 legacy success 的未知执行配置猜成当前配置。历史 `result_path` 可以安全回填 intended target；execution profile 仍保持 unknown，直到任务由新 execution layer 真正执行。
 
 ## M7 — Tests and CI
 
@@ -176,6 +197,7 @@ paddle-batch-ocr run --config CONFIG
 - [x] PaddleX official-model cache
 - [x] current official Actions major versions
 - [x] no duplicate feature-branch push + PR OCR jobs
+- [ ] real serial/parallel PaddleX manifest-provenance assertions
 - [ ] GPU manual / self-hosted smoke
 - [ ] expanded geometry golden tests
 
