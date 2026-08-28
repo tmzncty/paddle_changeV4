@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from .safety import is_within
 
@@ -167,6 +167,6 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path) -> ProjectCo
     return config
 
 
-def load_config(path: os.PathLike[str] | str) -> ProjectConfig:
+def load_config(path: Union[os.PathLike[str], str]) -> ProjectConfig:
     config_path = Path(path).expanduser().resolve(strict=True)
     return config_from_mapping(_load_mapping(config_path), base_dir=config_path.parent)
