@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .safety import validate_destructive_target
+from .safety import UnsafePathError, validate_destructive_target
 
 
 @dataclass(frozen=True)
@@ -30,12 +30,17 @@ def clean_temp_cache(
     """Clean only ``<cache_root>/temp``.
 
     Dry-run is the default. The cache root itself is never recursively deleted.
-    When ``execute=True``, path validation happens immediately before deletion.
+    A symlink at ``<cache_root>/temp`` is rejected rather than followed, even
+    when its destination would remain inside the configured cache boundary.
     """
 
     root = Path(cache_root).expanduser().resolve(strict=False)
-    target = cache_temp_dir(root)
-    safe_target = validate_destructive_target(target, root)
+    raw_target = root / "temp"
+
+    if raw_target.is_symlink():
+        raise UnsafePathError(f"refusing to clean symlinked cache temp directory: {raw_target}")
+
+    safe_target = validate_destructive_target(raw_target, root)
     existed = safe_target.exists()
 
     if not execute:
@@ -47,7 +52,7 @@ def clean_temp_cache(
         )
 
     if existed:
-        if safe_target.is_symlink() or safe_target.is_file():
+        if safe_target.is_file():
             safe_target.unlink()
         else:
             shutil.rmtree(safe_target)
