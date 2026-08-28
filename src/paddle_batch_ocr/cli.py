@@ -13,7 +13,9 @@ from .cache import clean_temp_cache
 from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
 from .manifest import ManifestStore
+from .pdf_render import PdfRenderError, render_pdf
 from .safety import UnsafePathError
+from .searchable_pdf import SearchablePdfError, build_searchable_pdf
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
@@ -135,6 +137,55 @@ def command_manifest_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_render(args: argparse.Namespace) -> int:
+    result = render_pdf(
+        Path(args.input_pdf),
+        Path(args.output),
+        dpi=args.dpi,
+        overwrite=args.overwrite,
+    )
+    payload = {
+        "source": str(result.source),
+        "output_dir": str(result.output_dir),
+        "page_count": result.page_count,
+        "dpi": result.dpi,
+        "pages": [str(path) for path in result.page_paths],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"rendered: {result.source}")
+        print(f"pages: {result.page_count}")
+        print(f"dpi: {result.dpi}")
+        print(f"output: {result.output_dir}")
+    return 0
+
+
+def command_searchable_pdf(args: argparse.Namespace) -> int:
+    result = build_searchable_pdf(
+        Path(args.images),
+        Path(args.ocr_json),
+        Path(args.output),
+        overwrite=args.overwrite,
+        y_offset=args.y_offset,
+        fontname=args.fontname,
+    )
+    payload = {
+        "output_pdf": str(result.output_pdf),
+        "page_count": result.page_count,
+        "text_line_count": result.text_line_count,
+        "images": [str(path) for path in result.image_paths],
+        "ocr_json": [str(path) for path in result.json_paths],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"searchable PDF: {result.output_pdf}")
+        print(f"pages: {result.page_count}")
+        print(f"text lines: {result.text_line_count}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paddle-batch-ocr",
@@ -151,6 +202,27 @@ def build_parser() -> argparse.ArgumentParser:
     scan = subparsers.add_parser("scan", help="Count configured input files without OCR")
     scan.add_argument("--config", required=True, help="Project JSON/YAML config")
     scan.set_defaults(func=command_scan)
+
+    render = subparsers.add_parser("render", help="Render every PDF page to a transactional PNG directory")
+    render.add_argument("input_pdf", help="Input PDF path")
+    render.add_argument("--output", required=True, help="Final page-image directory")
+    render.add_argument("--dpi", type=int, default=144, help="Render DPI (36-1200; default 144)")
+    render.add_argument("--overwrite", action="store_true", help="Replace an existing output directory transactionally")
+    render.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    render.set_defaults(func=command_render)
+
+    searchable = subparsers.add_parser(
+        "searchable-pdf",
+        help="Build a searchable PDF from page images and Paddle OCR JSON",
+    )
+    searchable.add_argument("--images", required=True, help="Directory containing page_<number> images")
+    searchable.add_argument("--ocr-json", required=True, help="Directory containing OCR JSON files")
+    searchable.add_argument("--output", required=True, help="Final searchable PDF path")
+    searchable.add_argument("--fontname", default="china-s", help="PyMuPDF font name (default: china-s)")
+    searchable.add_argument("--y-offset", type=float, default=0.0, help="Legacy-v7 text Y offset")
+    searchable.add_argument("--overwrite", action="store_true", help="Replace an existing output PDF atomically")
+    searchable.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    searchable.set_defaults(func=command_searchable_pdf)
 
     cache = subparsers.add_parser("cache", help="Cache maintenance")
     cache_subparsers = cache.add_subparsers(dest="cache_command", required=True)
@@ -183,7 +255,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     try:
         args = parser.parse_args(list(argv) if argv is not None else None)
         return int(args.func(args))
-    except (ConfigError, UnsafePathError, FileNotFoundError, OSError) as exc:
+    except (
+        ConfigError,
+        UnsafePathError,
+        PdfRenderError,
+        SearchablePdfError,
+        FileNotFoundError,
+        OSError,
+        ValueError,
+    ) as exc:
         parser.exit(2, f"error: {exc}\n")
 
 

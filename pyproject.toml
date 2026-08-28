@@ -23,6 +23,10 @@ classifiers = [
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]
+# Current PyMuPDF / Pillow releases require Python >=3.10, while the latest
+# Python-3.9-compatible releases remain inside these ranges. pip therefore
+# resolves a compatible version on 3.9 without forcing the core package off 3.9.
+pdf = ["PyMuPDF>=1.26,<2", "Pillow>=11,<13"]
 
 [project.scripts]
 paddle-batch-ocr = "paddle_batch_ocr.cli:main"
