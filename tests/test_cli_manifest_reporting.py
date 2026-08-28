@@ -35,12 +35,26 @@ class ManifestReportingCliTests(unittest.TestCase):
         manifest = root / "logs" / "manifest.sqlite3"
         source_ok = root / "ok.png"
         source_bad = root / "bad.png"
+        ok_output = root / "ok.json"
+        bad_output = root / "bad.json"
         source_ok.write_bytes(b"x")
         source_bad.write_bytes(b"x")
 
         with ManifestStore(manifest) as store:
-            store.mark_success(source_ok, "ocr", result_path=root / "ok.json")
-            store.mark_failure(source_bad, "ocr", RuntimeError("decode failed"))
+            store.mark_started(
+                source_ok,
+                "ocr",
+                intended_result_path=ok_output,
+                execution_profile={"schema": 1, "kind": "test", "mode": "ok"},
+            )
+            store.mark_success(source_ok, "ocr", result_path=ok_output)
+            store.mark_failure(
+                source_bad,
+                "ocr",
+                RuntimeError("decode failed"),
+                intended_result_path=bad_output,
+                execution_profile={"schema": 1, "kind": "test", "mode": "fail"},
+            )
         return manifest
 
     def test_report_json_and_jobs_json(self):
@@ -57,6 +71,13 @@ class ManifestReportingCliTests(unittest.TestCase):
             self.assertEqual(report["total"], 2)
             self.assertEqual(report["status"], {"failed": 1, "success": 1})
             self.assertEqual(report["error_classes"], {"RuntimeError": 1})
+            self.assertEqual(
+                report["provenance"],
+                {
+                    "intended_result_count": 2,
+                    "execution_profile_count": 2,
+                },
+            )
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -75,8 +96,14 @@ class ManifestReportingCliTests(unittest.TestCase):
             jobs = json.loads(stdout.getvalue())
             self.assertEqual(jobs["count"], 1)
             self.assertEqual(jobs["total_matching"], 1)
-            self.assertEqual(jobs["jobs"][0]["error_class"], "RuntimeError")
-            self.assertEqual(jobs["jobs"][0]["error_message"], "decode failed")
+            row = jobs["jobs"][0]
+            self.assertEqual(row["error_class"], "RuntimeError")
+            self.assertEqual(row["error_message"], "decode failed")
+            self.assertEqual(row["intended_result_path"], str((root / "bad.json").resolve()))
+            self.assertEqual(
+                json.loads(row["execution_profile_json"])["mode"],
+                "fail",
+            )
 
     def test_jobs_json_distinguishes_page_count_from_total_matching(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -102,7 +129,7 @@ class ManifestReportingCliTests(unittest.TestCase):
             self.assertEqual(payload["count"], 1)
             self.assertEqual(payload["total_matching"], 2)
 
-    def test_jobs_csv_is_machine_readable(self):
+    def test_jobs_csv_is_machine_readable_and_includes_provenance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = self._write_config(root)
@@ -125,6 +152,8 @@ class ManifestReportingCliTests(unittest.TestCase):
             rows = list(csv.DictReader(io.StringIO(stdout.getvalue())))
             self.assertEqual(len(rows), 2)
             self.assertEqual({row["status"] for row in rows}, {"success", "failed"})
+            self.assertTrue(all(row["intended_result_path"] for row in rows))
+            self.assertTrue(all(row["execution_profile_json"] for row in rows))
 
     def test_missing_manifest_report_and_jobs_do_not_create_database(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,6 +170,13 @@ class ManifestReportingCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertFalse(payload["exists"])
             self.assertEqual(payload["total"], 0)
+            self.assertEqual(
+                payload["provenance"],
+                {
+                    "intended_result_count": 0,
+                    "execution_profile_count": 0,
+                },
+            )
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
