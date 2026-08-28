@@ -136,7 +136,7 @@ def run_ocr_batch(
     overwrite: bool = False,
     create_pipeline_fn: Optional[Callable[..., object]] = None,
 ) -> OcrBatchResult:
-    """Run OCR serially with one pipeline instance and per-image failure isolation.
+    """Run OCR serially with one lazily-created pipeline instance.
 
     Serial execution is intentional for the first public engine contract. A
     later multiprocessing layer can initialize one pipeline per worker around
@@ -147,25 +147,42 @@ def run_ocr_batch(
     if not tasks:
         raise OcrRunnerError(f"no supported OCR images found under {input_path}")
 
-    pipeline = create_ocr_pipeline(
-        pipeline_ref,
-        device=device,
-        engine=engine,
-        use_hpip=use_hpip,
-        create_pipeline_fn=create_pipeline_fn,
-    )
+    pipeline: Optional[object] = None
+
+    def get_pipeline() -> object:
+        nonlocal pipeline
+        if pipeline is None:
+            pipeline = create_ocr_pipeline(
+                pipeline_ref,
+                device=device,
+                engine=engine,
+                use_hpip=use_hpip,
+                create_pipeline_fn=create_pipeline_fn,
+            )
+        return pipeline
 
     store = ManifestStore(manifest_path) if manifest_path is not None else None
     results: List[OcrTaskResult] = []
     try:
         for task in tasks:
             try:
+                previous_record = (
+                    store.get_job(task.source, "ocr") if store is not None else None
+                )
                 manifest_needs_run = (
                     store.needs_run(task.source, "ocr") if store is not None else True
                 )
 
                 if task.output_json.exists():
-                    if resume and (store is None or not manifest_needs_run):
+                    can_adopt_existing = (
+                        resume
+                        and (
+                            store is None
+                            or previous_record is None
+                            or not manifest_needs_run
+                        )
+                    )
+                    if can_adopt_existing:
                         _validate_existing_result(task.output_json)
                         if store is not None:
                             store.mark_success(
@@ -185,7 +202,7 @@ def run_ocr_batch(
                     if not overwrite:
                         reason = (
                             "existing result is stale according to manifest; use --overwrite"
-                            if store is not None and manifest_needs_run
+                            if store is not None and previous_record is not None and manifest_needs_run
                             else "OCR output already exists; enable resume or overwrite"
                         )
                         raise OcrRunnerError(f"{reason}: {task.output_json}")
@@ -199,7 +216,7 @@ def run_ocr_batch(
                     )
 
                 predict_one_to_json(
-                    pipeline,
+                    get_pipeline(),
                     task.source,
                     task.output_json,
                     overwrite=overwrite,
