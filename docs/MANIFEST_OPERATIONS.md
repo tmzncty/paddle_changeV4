@@ -107,7 +107,24 @@ paddle-batch-ocr manifest jobs \
   --json
 ```
 
-底层 query 提供 total matching count；JSON CLI 会逐步暴露该值，便于 agent 精确分页，而不是一直翻到空页才停止。
+JSON 同时返回：
+
+```json
+{
+  "count": 100,
+  "total_matching": 237,
+  "filters": {
+    "status": "failed",
+    "stage": null,
+    "error_class": null,
+    "limit": 100,
+    "offset": 200
+  },
+  "jobs": []
+}
+```
+
+其中 `count` 是当前页实际返回的行数，`total_matching` 是忽略 limit/offset 后符合过滤条件的总数。agent 因此可以精确计算是否还有下一页，而不必一直翻到空结果。
 
 ## CSV export
 
@@ -137,7 +154,7 @@ finished_at
 duration_s
 ```
 
-CSV 使用标准 quoting，因此 error message 含逗号、引号或换行时仍可被标准 CSV parser 读取。
+CSV 使用标准 quoting，因此 error message 含逗号、引号或换行时仍可被标准 CSV parser 读取。CSV 只输出行数据；分页元信息保留在 JSON/table 模式。
 
 ## Read-only guarantee
 
