@@ -78,3 +78,76 @@ jobs:
 
       - name: Run real PDF execution tests
         run: python -m unittest discover -s tests_pdf -v
+
+  ocr-cpu-smoke:
+    runs-on: ubuntu-latest
+    env:
+      PADDLE_PDX_MODEL_SOURCE: BOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install official PaddlePaddle CPU runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install paddlepaddle==3.3.0 \
+            -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+
+      - name: Install PaddleX OCR integration
+        run: python -m pip install '.[ocr]'
+
+      - name: Record installed OCR runtime versions
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+          for name in ("paddlepaddle", "paddlex", "paddleocr"):
+              try:
+                  print(f"{name}={metadata.version(name)}")
+              except metadata.PackageNotFoundError:
+                  print(f"{name}=not-installed")
+          PY
+
+      - name: Download official PaddleX General OCR demo image
+        run: |
+          curl --fail --location --retry 3 \
+            https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_ocr_001.png \
+            --output /tmp/general_ocr_001.png
+          test -s /tmp/general_ocr_001.png
+
+      - name: Run real PaddleX OCR through project CLI
+        run: |
+          paddle-batch-ocr ocr /tmp/general_ocr_001.png \
+            --output /tmp/ocr-json \
+            --device cpu \
+            --json | tee /tmp/ocr-summary.json
+
+      - name: Validate produced OCR JSON through project schema
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from paddle_batch_ocr.ocr_schema import parse_ocr_page
+
+          summary = json.loads(Path("/tmp/ocr-summary.json").read_text(encoding="utf-8"))
+          assert summary["success"] == 1, summary
+          assert summary["failed"] == 0, summary
+
+          output = Path("/tmp/ocr-json/general_ocr_001_result.json")
+          assert output.is_file(), output
+          payload = json.loads(output.read_text(encoding="utf-8"))
+          page = parse_ocr_page(payload)
+          assert len(page.lines) > 0, "real OCR returned no recognized lines"
+          assert page.text_field == "rec_texts", page.text_field
+          assert page.polygon_field in {"rec_polys", "dt_polys"}, page.polygon_field
+          assert payload.get("_paddle_batch_ocr", {}).get("schema") == 1
+          print(f"recognized_lines={len(page.lines)}")
+          print(f"polygon_field={page.polygon_field}")
+          PY
