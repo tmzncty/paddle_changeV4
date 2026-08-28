@@ -81,6 +81,7 @@ jobs:
 
   ocr-cpu-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       PADDLE_PDX_MODEL_SOURCE: BOS
 
