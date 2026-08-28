@@ -1,8 +1,8 @@
 # paddle_changeV4
 
-面向**大规模中文 OCR、PDF 批处理与可搜索 PDF 重建**的 PaddleOCR / PaddleX 实验性流水线。
+面向**大规模中文 OCR、PDF 批处理与可搜索 PDF 重建**的 PaddleOCR / PaddleX 流水线实验项目。
 
-> 当前仓库正在从“长期迭代的个人脚本集合”重构为可复现、可配置、可测试的公开项目。现有脚本暂时保留，用于保存已经验证过的处理逻辑；新代码将逐步迁移到统一 CLI、配置系统和模块化实现中。
+> 当前仓库正在从“长期迭代的个人脚本集合”重构为可复现、可配置、可测试的公开项目。历史脚本继续保留以保存已经验证过的处理经验；新的安全层、配置系统和 CLI 已经开始落在 `src/paddle_batch_ocr/`。
 
 ## 项目要解决什么
 
@@ -13,153 +13,227 @@
 3. 使用 PaddleX / PaddleOCR 执行 OCR；
 4. 保存逐页 JSON 结果；
 5. 根据 OCR 坐标重建带隐藏文本层的 searchable PDF；
-6. 在大量文件、长时间运行、GPU / CPU / 内存 / 磁盘 I/O 同时受压时尽量支持跳过已完成任务、错误留档和恢复。
+6. 在大量文件、长时间运行、GPU / CPU / 内存 / 磁盘 I/O 同时受压时支持跳过、错误留档和恢复。
 
-当前代码来自真实的大批量处理环境，因此包含不少针对吞吐量、缓存、并发和异常文件的经验性处理。但这些经验目前仍有相当一部分以硬编码形式存在，**不能直接视为通用安全默认值**。
+现有 legacy 代码来自真实的大批量处理环境，因此包含很多关于吞吐量、缓存、并发、异常页和中文深层路径的经验。但其中不少机器参数曾直接硬编码在源码里，**不能视为通用安全默认值**。
 
 ## 当前状态
 
-**Status: legacy scripts available / refactor in progress**
+**Status: legacy pipeline preserved / public refactor active**
 
-仓库目前主要包含若干历史脚本：
+现在仓库同时存在两层：
+
+- `src/paddle_batch_ocr/`：新的可安装 package、安全配置、诊断和 CLI；
+- 根目录历史 `.py`：尚未迁移完成的 OCR / PDF 生产逻辑。
+
+### 已经可用的新 CLI
+
+项目现在可以作为 Python package 安装，而不要求安装 Paddle：
+
+```bash
+python -m pip install --no-deps .
+paddle-batch-ocr --version
+paddle-batch-ocr doctor
+```
+
+`--no-deps` 是有意设计：Paddle CPU/GPU/CUDA 环境暂时不强行绑定到项目自身依赖中。
+
+当前可用命令：
+
+```bash
+# 无配置也能检查当前机器
+paddle-batch-ocr doctor
+paddle-batch-ocr doctor --json
+
+# 带项目配置检查输入、磁盘、Paddle 配置等
+paddle-batch-ocr doctor --config examples/config.json
+
+# OCR 前只扫描并统计输入，不执行模型
+paddle-batch-ocr scan --config examples/config.json
+
+# 默认 dry-run：只告诉你准备清理哪个 temp cache
+paddle-batch-ocr cache clean --config examples/config.json
+
+# 只有显式给出 --execute 才真正删除 <cache_root>/temp
+paddle-batch-ocr cache clean --config examples/config.json --execute
+```
+
+`doctor` 会尽量报告：
+
+- Python / 平台；
+- CPU 数量与物理内存；
+- Paddle / Paddle GPU / PaddleX / PaddleOCR / PyMuPDF / Pillow 安装版本；
+- `nvidia-smi` 可见 GPU、显存和驱动；
+- output / log / cache 对应磁盘剩余空间；
+- 输入或 Paddle 配置缺失；
+- 明显过高的 worker / batch 参数。
+
+### 项目配置
+
+推荐从 [`examples/config.json`](examples/config.json) 开始：
+
+```json
+{
+  "input_sources": [
+    {"path": "./input-pdfs", "type": "pdf"},
+    {"path": "./input-images", "type": "image"}
+  ],
+  "output_root": "./work/output",
+  "log_dir": "./work/logs",
+  "cache_root": "./work/cache",
+  "paddle_config": "./OCR2.yaml",
+  "runtime": {
+    "device": "auto",
+    "ocr_workers": 1,
+    "pdf_prep_workers": 1,
+    "render_workers": 1,
+    "batch_size": 1
+  },
+  "delete_temp_images": false,
+  "overwrite": false,
+  "resume": true
+}
+```
+
+配置中的相对路径以**配置文件所在目录**为基准解析。
+
+新的默认原则是保守而不是追求 benchmark：
+
+- worker 默认都是 `1`；
+- batch size 默认 `1`；
+- `overwrite=false`；
+- cache 删除默认 dry-run；
+- output / log / cache 不允许位于输入目录内部；
+- output 与 cache 不允许互相嵌套；
+- destructive path 必须先经过真实路径 containment 检查。
+
+JSON 配置完全使用标准库即可读取。YAML 配置是可选支持，需要：
+
+```bash
+python -m pip install '.[yaml]'
+```
+
+## 尚未迁移的新功能
+
+新的 CLI **目前还不会执行 OCR 或 searchable-PDF 重建**。以下命令仍属于 roadmap，而不是当前稳定入口：
+
+```text
+paddle-batch-ocr ocr
+paddle-batch-ocr render
+paddle-batch-ocr searchable-pdf
+paddle-batch-ocr run
+```
+
+在新的 OCR engine、PDF adapter 和回归测试覆盖旧行为之前，不会为了“看起来完成”而直接删除历史实现。
+
+## Legacy 实现索引
 
 | 文件 | 当前用途 | 状态 |
 | --- | --- | --- |
 | `pdf_to_png.py` | PDF 多进程拆图 | legacy |
 | `highocr3_f2.py` | 图片目录 OCR | legacy |
-| `highocr3_f2_pdf.py` / `highocr3_f2_pdf2.py` | PDF OCR 的早期实现 | legacy |
-| `highocr4_f1_pdf_img.py` | 同时处理 PDF / 图片的较新批处理实现 | **当前主要参考实现** |
+| `highocr3_f2_pdf.py` / `highocr3_f2_pdf2.py` | PDF OCR 早期实现 | legacy |
+| `highocr4_f1_pdf_img.py` | PDF / 图片统一批处理 | **当前 OCR 主要参考实现** |
 | `pdf_creator_with_text_layer5.py` / `6.py` / `7.py` | OCR JSON → 带文本层 PDF | legacy，`7` 为较新版本 |
 | `pdf_searchable2.5.py` / `pdf_searchable3.py` | searchable PDF 实验实现 | legacy |
-| `del_10min_cache.py` | PaddleX 临时缓存维护实验 | legacy / destructive behavior requires review |
+| `del_10min_cache.py` | PaddleX 临时缓存维护实验 | legacy / destructive |
 | `OCR.yaml` / `OCR2.yaml` | PaddleX OCR 配置样例 | legacy configuration |
 
-这些文件名中的数字是历史迭代痕迹，不代表稳定 API 或正式 release。后续会把它们收束为模块和版本化发布，而不是继续通过文件名递增版本。
+这些文件名中的数字只是历史迭代痕迹，不代表稳定 API 或正式 release。
 
-## 重要安全说明
-
-现有 legacy 脚本是为特定机器和目录布局写的，运行前务必阅读源码并修改配置。
-
-尤其需要注意：
-
-- 多个脚本仍包含 `/media/tmzn/...` 形式的**个人绝对路径**；
-- 部分脚本默认使用较高的多进程并发；
-- OCR / PDF 处理可能产生非常大的临时数据和随机 I/O；
-- 部分缓存维护逻辑会递归删除 PaddleX 临时目录；
-- 当前没有对所有输入、路径和删除操作提供统一的 dry-run / confirmation 保护；
-- 不应在不理解路径配置的情况下以高权限运行这些脚本。
-
-公开重构版的首要目标之一，就是把这些行为改成**显式配置、安全默认值、路径边界检查和可预览操作**。
-
-## 历史测试环境
-
-旧代码主要在类似以下环境中开发和使用：
-
-- Ubuntu 22.04
-- Python 3.9.x
-- CUDA 11.8 环境
-- Paddle / PaddleX GPU 推理
-- 大容量本地磁盘与高并发 CPU 环境
-
-这只是历史工作环境，不是当前承诺的兼容性矩阵。Paddle、PaddleX 与 CUDA 的版本匹配请以各自当前官方文档为准。
-
-主要第三方依赖包括：
-
-- Paddle / PaddleX
-- PyMuPDF (`fitz`)
-- Pillow
-- NumPy
-- PyYAML
-- pypdfium2
-- colorama
-- natsort
-- psutil
-
-重构完成前不会给出一个假装“所有机器都能直接 pip install”的锁定依赖文件，因为 CPU/GPU、CUDA 与 Paddle 版本组合需要单独处理。
-
-## 现阶段如何使用
-
-如果你只是想研究现有实现，建议从：
+如果要阅读现有 OCR 生产逻辑，优先看：
 
 ```text
 highocr4_f1_pdf_img.py
 ```
 
-开始阅读。它包含较完整的：
-
-- PDF 与图片输入扫描；
-- PaddleX pipeline 初始化；
-- 多阶段并发处理；
-- 已完成 JSON 跳过；
-- PDF 页面准备；
-- OCR 日志和错误文件留档；
-- PaddleX 临时目录处理。
-
-如果你想研究 OCR JSON → searchable PDF 的实现，则优先阅读：
+如果要研究 OCR JSON → searchable PDF 的实现，优先看：
 
 ```text
 pdf_creator_with_text_layer7.py
 ```
 
-**不要直接运行默认配置。** 先检查脚本顶部的路径、并发数、缓存目录、输入输出目录和删除行为。
+**不要直接运行 legacy 默认配置。** 多个旧脚本仍包含 `/media/tmzn/...` 的机器路径、高并发参数以及递归缓存处理。
 
-## 重构方向
+## 安全边界
 
-接下来不再继续制造新的 `*_v8_final2.py`，而是把现有经验拆成稳定组件：
+新实现把安全问题当成程序语义，而不是 README 警告：
+
+- cache cleanup 只允许作用于配置的 `<cache_root>/temp`；
+- cache root 本身不会被递归删除；
+- `/`、用户 home、当前工作目录等受保护路径会被拒绝；
+- containment 使用真实路径关系，不使用字符串前缀，因此 `/data/cache-evil` 不会被误认为 `/data/cache` 的子目录；
+- 删除默认 dry-run，必须显式 `--execute`；
+- 输入目录与可写工作目录必须隔离。
+
+这并不意味着 legacy 脚本已经获得这些保护。直到迁移完成前，根目录旧脚本仍应视为高级用户参考实现。
+
+## 历史运行环境
+
+旧代码主要在类似以下环境中开发和使用：
+
+- Ubuntu 22.04
+- Python 3.9.x
+- CUDA 11.8
+- Paddle / PaddleX GPU 推理
+- 大容量本地磁盘与高并发 CPU 环境
+
+这只是历史环境，不是当前兼容性承诺。新的公共基线 CI 目前覆盖 Python 3.9 和 3.12 的：
+
+- legacy Python 语法编译；
+- 新 package 全量 compile；
+- dependency-free 单元测试；
+- `pip install --no-deps .`；
+- CLI `--version`；
+- `doctor --json`。
+
+Paddle、PaddleX、CUDA 的 CPU/GPU 矩阵将在独立 smoke / self-hosted 测试中建立，不让公共 CI 假装拥有 GPU 环境。
+
+## 新代码结构
 
 ```text
-src/
-  paddle_batch_ocr/
-    cli.py
-    config.py
-    discovery.py
-    ocr.py
-    pdf_render.py
-    searchable_pdf.py
-    cache.py
-    progress.py
-    safety.py
-
-tests/
-configs/
-docs/
+src/paddle_batch_ocr/
+  __init__.py
+  cache.py
+  cli.py
+  config.py
+  discovery.py
+  doctor.py
+  safety.py
 ```
 
-计划提供一个统一入口，例如：
-
-```bash
-paddle-batch-ocr ocr --config config.yaml
-paddle-batch-ocr render input.pdf --output pages/
-paddle-batch-ocr searchable-pdf --images pages/ --ocr-json json/ --output book.pdf
-```
-
-配置优先级会逐步统一为：
+后续会继续增加：
 
 ```text
-CLI 参数 > 配置文件 > 环境变量 > 安全默认值
+ocr.py
+pdf_render.py
+searchable_pdf.py
+progress.py
+manifest.py
 ```
 
-详细计划见 [`ROADMAP.md`](ROADMAP.md)。
+详细阶段见 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 重构原则
 
-1. **先保持行为，再整理结构**：旧脚本不会在没有等价测试前被直接删除。
-2. **安全默认**：任何递归删除、覆盖、超高并发都不能是隐式默认行为。
-3. **配置与代码分离**：不再把机器路径、GPU 数量、数据集路径写死在源码中。
-4. **可恢复**：大规模任务必须能够识别已完成工作并从中断处继续。
-5. **可观测**：吞吐量、错误、跳过数量、耗时和资源配置必须能够被记录。
-6. **可复现**：明确 Python / Paddle / CUDA 兼容矩阵，并逐步建立测试与基准。
-7. **保留文献数字化需求**：中文路径、深层目录、大型 PDF、异常页和几十万页级任务仍是一等公民。
+1. **先保持行为，再整理结构**：没有 fixtures / tests 前不删已验证的旧逻辑。
+2. **安全默认**：递归删除、覆盖、高并发必须显式开启。
+3. **配置与代码分离**：机器路径、GPU 数量、数据集路径不再写死在源码中。
+4. **可恢复**：几十万页任务最终需要 manifest，而不只依赖“目标文件存在”。
+5. **可观测**：吞吐量、错误、跳过、耗时、资源配置要成为结构化数据。
+6. **可复现**：分开维护项目依赖与 Paddle/CUDA 环境矩阵。
+7. **文献数字化是一等公民**：中文路径、深目录、大 PDF、异常页和海量文件不能在“重构得漂亮”时被牺牲。
 
 ## 贡献
 
-目前最有价值的贡献不是继续增加一个脚本副本，而是：
+当前最有价值的贡献包括：
 
-- 把硬编码配置迁移到统一配置模型；
-- 为路径映射、页码匹配、OCR JSON 解析等纯逻辑建立测试；
-- 将 destructive cache 操作改为受约束的安全实现；
-- 提供不同 Paddle / PaddleX / CUDA 组合的可复现环境报告；
-- 用最小公开样本构建端到端测试。
+- legacy 行为 fixture / golden output；
+- Paddle OCR result schema adapter；
+- PDF 坐标与隐藏文本层回归测试；
+- CPU / GPU 可复现环境报告；
+- 大任务 resume / manifest；
+- 不牺牲吞吐量的安全并发实现。
 
 参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
@@ -169,4 +243,4 @@ CLI 参数 > 配置文件 > 环境变量 > 安全默认值
 
 ## 项目来源与说明
 
-`tmzncty/paddle_changeV4` 当前保留了 `Get-data-all/paddle_change` 的 fork 关系与历史。重构将继续保留 Git 历史与许可证信息，不通过复制粘贴的方式抹掉已有来源记录。
+`tmzncty/paddle_changeV4` 保留 `Get-data-all/paddle_change` 的 fork 关系、Git 历史和许可证信息。公开重构不会为了让历史“看起来整齐”而抹掉已有来源记录。
