@@ -9,6 +9,20 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+def _publication_target(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"refusing symlinked publication target: {raw}")
+    return raw.resolve(strict=False)
+
+
+def _publication_temp(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"refusing symlinked publication source: {raw}")
+    return raw.resolve(strict=True)
+
+
 def _publish_temp(temp_path: Path, target: Path, *, overwrite: bool) -> None:
     if overwrite:
         os.replace(str(temp_path), str(target))
@@ -29,8 +43,8 @@ def atomic_publish_file(
 ) -> Path:
     """Publish an already-written same-directory file atomically."""
 
-    temp = Path(temp_path).expanduser().resolve(strict=True)
-    target = Path(target_path).expanduser().resolve(strict=False)
+    temp = _publication_temp(temp_path)
+    target = _publication_target(target_path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if temp.parent != target.parent:
@@ -57,7 +71,7 @@ def atomic_write_bytes(
     if not isinstance(data, bytes):
         raise TypeError("data must be bytes")
 
-    target = Path(path).expanduser().resolve(strict=False)
+    target = _publication_target(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     temp_path: Optional[Path] = None
@@ -99,7 +113,7 @@ def atomic_write_json(
     publishes with ``os.replace``.
     """
 
-    target = Path(path).expanduser().resolve(strict=False)
+    target = _publication_target(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     temp_path: Optional[Path] = None
