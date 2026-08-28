@@ -2,7 +2,7 @@
 
 面向**大规模中文 OCR、PDF 批处理与可搜索 PDF 重建**的 PaddleOCR / PaddleX 流水线实验项目。
 
-> 当前仓库正在从“长期迭代的个人脚本集合”重构为可复现、可配置、可测试的公开项目。历史脚本继续保留以保存已经验证过的处理经验；新的安全层、配置系统和 CLI 已经开始落在 `src/paddle_batch_ocr/`。
+> 当前仓库正在从“长期迭代的个人脚本集合”重构为可复现、可配置、可测试的公开项目。历史脚本继续保留以保存已经验证过的处理经验；新的安全层、配置系统、manifest 和 CLI 已经落在 `src/paddle_batch_ocr/`。
 
 ## 项目要解决什么
 
@@ -23,7 +23,7 @@
 
 现在仓库同时存在两层：
 
-- `src/paddle_batch_ocr/`：新的可安装 package、安全配置、诊断和 CLI；
+- `src/paddle_batch_ocr/`：新的可安装 package、安全配置、诊断、manifest 和 CLI；
 - 根目录历史 `.py`：尚未迁移完成的 OCR / PDF 生产逻辑。
 
 ### 已经可用的新 CLI
@@ -50,6 +50,10 @@ paddle-batch-ocr doctor --config examples/config.json
 
 # OCR 前只扫描并统计输入，不执行模型
 paddle-batch-ocr scan --config examples/config.json
+
+# 查看 SQLite manifest 状态；如果 manifest 不存在，不会创建空数据库
+paddle-batch-ocr manifest status --config examples/config.json
+paddle-batch-ocr manifest status --config examples/config.json --json
 
 # 默认 dry-run：只告诉你准备清理哪个 temp cache
 paddle-batch-ocr cache clean --config examples/config.json
@@ -95,7 +99,11 @@ paddle-batch-ocr cache clean --config examples/config.json --execute
 }
 ```
 
-配置中的相对路径以**配置文件所在目录**为基准解析。
+配置中的相对路径以**配置文件所在目录**为基准解析。若未指定 `manifest_path`，默认使用：
+
+```text
+<log_dir>/manifest.sqlite3
+```
 
 新的默认原则是保守而不是追求 benchmark：
 
@@ -103,8 +111,11 @@ paddle-batch-ocr cache clean --config examples/config.json --execute
 - batch size 默认 `1`；
 - `overwrite=false`；
 - cache 删除默认 dry-run；
-- output / log / cache 不允许位于输入目录内部；
+- output / log / cache / manifest 不允许位于输入目录内部；
 - output 与 cache 不允许互相嵌套；
+- log 与 cache 不允许重叠；
+- manifest 不允许放进 cache root；
+- cache root 不能是 filesystem root、用户 home 或当前工作目录；
 - destructive path 必须先经过真实路径 containment 检查。
 
 JSON 配置完全使用标准库即可读取。YAML 配置是可选支持，需要：
@@ -112,6 +123,34 @@ JSON 配置完全使用标准库即可读取。YAML 配置是可选支持，需�
 ```bash
 python -m pip install '.[yaml]'
 ```
+
+## Manifest 与恢复
+
+新的 manifest 使用 Python 标准库 SQLite，以 `(source_path, stage)` 为键记录任务状态。当前核心能力包括：
+
+- source size / mtime fingerprint；
+- `pending / running / success / failed` 状态；
+- result path；
+- retry count；
+- error class / message；
+- worker / device；
+- started / finished 时间与 duration；
+- WAL + busy timeout，允许多个 worker 各自打开连接；
+- 已成功任务的结果文件消失时重新运行；
+- 源文件 size/mtime 变化时自动把旧 success 失效为 pending。
+
+这比 legacy 的“目标文件存在就跳过”更适合长时间、几十万页级任务。
+
+## OCR JSON / searchable-PDF 兼容层
+
+重构已经把几条历史隐含协议变成了独立模块和测试：
+
+- `paddle_batch_ocr.naming` 保存 v7 的多种 page JSON 文件名匹配优先级；
+- `paddle_batch_ocr.ocr_schema` 同时接受历史 `rec_text` 与较新 `rec_texts`；
+- `paddle_batch_ocr.layout` 冻结 v7 的两栏排序和 polygon 0/2 点文本矩形行为；
+- `paddle_batch_ocr.io_utils.atomic_write_json` 用同目录临时文件、fsync 和原子发布写 OCR JSON，默认不覆盖已有结果。
+
+详细 legacy 行为见 [`docs/LEGACY_BEHAVIOR.md`](docs/LEGACY_BEHAVIOR.md)。
 
 ## 尚未迁移的新功能
 
@@ -141,17 +180,7 @@ paddle-batch-ocr run
 
 这些文件名中的数字只是历史迭代痕迹，不代表稳定 API 或正式 release。
 
-如果要阅读现有 OCR 生产逻辑，优先看：
-
-```text
-highocr4_f1_pdf_img.py
-```
-
-如果要研究 OCR JSON → searchable PDF 的实现，优先看：
-
-```text
-pdf_creator_with_text_layer7.py
-```
+如果要阅读现有 OCR 生产逻辑，优先看 `highocr4_f1_pdf_img.py`；如果要研究 OCR JSON → searchable PDF 的实现，优先看 `pdf_creator_with_text_layer7.py`。
 
 **不要直接运行 legacy 默认配置。** 多个旧脚本仍包含 `/media/tmzn/...` 的机器路径、高并发参数以及递归缓存处理。
 
@@ -163,20 +192,15 @@ pdf_creator_with_text_layer7.py
 - cache root 本身不会被递归删除；
 - `/`、用户 home、当前工作目录等受保护路径会被拒绝；
 - containment 使用真实路径关系，不使用字符串前缀，因此 `/data/cache-evil` 不会被误认为 `/data/cache` 的子目录；
+- symlink 解析后越界也会被拒绝；
 - 删除默认 dry-run，必须显式 `--execute`；
-- 输入目录与可写工作目录必须隔离。
+- 输入、输出、日志、cache、manifest 的危险路径重叠会在配置加载时直接报错。
 
 这并不意味着 legacy 脚本已经获得这些保护。直到迁移完成前，根目录旧脚本仍应视为高级用户参考实现。
 
-## 历史运行环境
+## 历史运行环境与 CI
 
-旧代码主要在类似以下环境中开发和使用：
-
-- Ubuntu 22.04
-- Python 3.9.x
-- CUDA 11.8
-- Paddle / PaddleX GPU 推理
-- 大容量本地磁盘与高并发 CPU 环境
+旧代码主要在类似以下环境中开发和使用：Ubuntu 22.04、Python 3.9.x、CUDA 11.8、Paddle/PaddleX GPU 推理以及大容量本地磁盘环境。
 
 这只是历史环境，不是当前兼容性承诺。新的公共基线 CI 目前覆盖 Python 3.9 和 3.12 的：
 
@@ -199,43 +223,29 @@ src/paddle_batch_ocr/
   config.py
   discovery.py
   doctor.py
+  io_utils.py
+  layout.py
+  manifest.py
+  naming.py
+  ocr_schema.py
   safety.py
 ```
 
-后续会继续增加：
-
-```text
-ocr.py
-pdf_render.py
-searchable_pdf.py
-progress.py
-manifest.py
-```
-
-详细阶段见 [`ROADMAP.md`](ROADMAP.md)。
+后续会继续增加 `ocr.py`、`pdf_render.py`、`searchable_pdf.py`、`progress.py` 等执行层。详细阶段见 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 重构原则
 
 1. **先保持行为，再整理结构**：没有 fixtures / tests 前不删已验证的旧逻辑。
 2. **安全默认**：递归删除、覆盖、高并发必须显式开启。
 3. **配置与代码分离**：机器路径、GPU 数量、数据集路径不再写死在源码中。
-4. **可恢复**：几十万页任务最终需要 manifest，而不只依赖“目标文件存在”。
+4. **可恢复**：几十万页任务用 manifest 识别输入变化、结果丢失和失败状态。
 5. **可观测**：吞吐量、错误、跳过、耗时、资源配置要成为结构化数据。
 6. **可复现**：分开维护项目依赖与 Paddle/CUDA 环境矩阵。
 7. **文献数字化是一等公民**：中文路径、深目录、大 PDF、异常页和海量文件不能在“重构得漂亮”时被牺牲。
 
 ## 贡献
 
-当前最有价值的贡献包括：
-
-- legacy 行为 fixture / golden output；
-- Paddle OCR result schema adapter；
-- PDF 坐标与隐藏文本层回归测试；
-- CPU / GPU 可复现环境报告；
-- 大任务 resume / manifest；
-- 不牺牲吞吐量的安全并发实现。
-
-参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+当前最有价值的贡献包括 legacy 行为 fixture / golden output、Paddle OCR result schema adapter、PDF 坐标与隐藏文本层回归测试、CPU/GPU 可复现环境报告，以及大任务 resume/manifest。参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## License
 
