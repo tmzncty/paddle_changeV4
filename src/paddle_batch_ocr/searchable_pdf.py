@@ -35,7 +35,17 @@ class SearchablePdfResult:
 
 def _require_pdf_dependencies():
     try:
-        import fitz  # type: ignore
+        import pymupdf as fitz  # type: ignore
+    except ImportError:
+        try:
+            import fitz  # type: ignore
+        except ImportError as exc:
+            raise PdfDependencyError(
+                "searchable-PDF reconstruction requires PyMuPDF and Pillow; "
+                "install paddle-batch-ocr[pdf]"
+            ) from exc
+
+    try:
         from PIL import Image  # type: ignore
     except ImportError as exc:
         raise PdfDependencyError(
