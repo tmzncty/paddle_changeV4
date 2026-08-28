@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Union
+from typing import Callable, Dict, Iterable, Mapping, Optional, Union
 
 from .io_utils import atomic_write_json
 from .ocr_schema import OcrPage, OcrSchemaError, parse_ocr_page
@@ -39,12 +39,7 @@ def _unwrap_result_mapping(data: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def result_mapping(result: object) -> Mapping[str, object]:
-    """Return a PaddleX/PaddleOCR result as a mapping without writing a file.
-
-    Current PaddleX Result objects expose a ``json`` attribute whose content is
-    equivalent to ``save_to_json`` output. Mapping inputs are also accepted so
-    the adapter can be unit-tested without importing PaddleX.
-    """
+    """Return a PaddleX/PaddleOCR result as a mapping without writing a file."""
 
     if isinstance(result, Mapping):
         data = result
@@ -54,8 +49,6 @@ def result_mapping(result: object) -> Mapping[str, object]:
         except (AttributeError, RuntimeError) as exc:
             raise PaddleXResultError("PaddleX result does not expose a json attribute") from exc
 
-        # Accept a callable accessor defensively for older/custom Result wrappers,
-        # while treating the documented property form as the primary API.
         if callable(json_value):
             json_value = json_value()
         if not isinstance(json_value, Mapping):
@@ -68,12 +61,7 @@ def result_mapping(result: object) -> Mapping[str, object]:
 
 
 def normalize_ocr_result(result: object) -> Dict[str, object]:
-    """Validate a Result object and return its stable JSON mapping.
-
-    Validation goes through ``parse_ocr_page`` so modern ``rec_polys`` /
-    ``rec_texts`` pairing and historical field fallbacks share one contract.
-    The original mapping fields are preserved for provenance and future use.
-    """
+    """Validate a Result object and return its stable JSON mapping."""
 
     mapping = result_mapping(result)
     try:
@@ -129,11 +117,7 @@ def create_ocr_pipeline(
     hpi_config: Optional[Mapping[str, object]] = None,
     create_pipeline_fn: Optional[Callable[..., object]] = None,
 ) -> object:
-    """Instantiate the current PaddleX OCR pipeline lazily.
-
-    ``pipeline`` may be ``"OCR"`` or a local PaddleX pipeline YAML path. The
-    optional callable injection exists for dependency-free contract tests.
-    """
+    """Instantiate the current PaddleX OCR pipeline lazily."""
 
     if isinstance(pipeline, os.PathLike):
         pipeline_ref = os.fspath(Path(pipeline).expanduser().resolve(strict=True))
@@ -159,21 +143,50 @@ def create_ocr_pipeline(
     return create_pipeline_fn(pipeline=pipeline_ref, **kwargs)
 
 
-def predict_one(pipeline: object, image_path: Path) -> object:
+def default_ocr_predict_kwargs(
+    *,
+    use_doc_orientation_classify: bool = False,
+    use_doc_unwarping: bool = False,
+    use_textline_orientation: bool = False,
+) -> Dict[str, object]:
+    """Return the lightweight General OCR predict options used by this project."""
+
+    for name, value in (
+        ("use_doc_orientation_classify", use_doc_orientation_classify),
+        ("use_doc_unwarping", use_doc_unwarping),
+        ("use_textline_orientation", use_textline_orientation),
+    ):
+        if not isinstance(value, bool):
+            raise TypeError(f"{name} must be bool")
+
+    return {
+        "use_doc_orientation_classify": use_doc_orientation_classify,
+        "use_doc_unwarping": use_doc_unwarping,
+        "use_textline_orientation": use_textline_orientation,
+    }
+
+
+def predict_one(
+    pipeline: object,
+    image_path: Path,
+    *,
+    predict_kwargs: Optional[Mapping[str, object]] = None,
+) -> object:
     """Run one image through a pipeline and require exactly one Result object."""
 
     source = Path(image_path).expanduser().resolve(strict=True)
     if not source.is_file():
         raise FileNotFoundError(source)
 
+    kwargs = dict(predict_kwargs or {})
     predict_iter = getattr(pipeline, "predict_iter", None)
     if callable(predict_iter):
-        output: Iterable[object] = predict_iter(input=os.fspath(source))
+        output: Iterable[object] = predict_iter(input=os.fspath(source), **kwargs)
     else:
         predict = getattr(pipeline, "predict", None)
         if not callable(predict):
             raise PaddleXResultError("pipeline exposes neither predict_iter nor predict")
-        output = predict(input=os.fspath(source))
+        output = predict(input=os.fspath(source), **kwargs)
 
     iterator = iter(output)
     try:
@@ -194,9 +207,10 @@ def predict_one_to_json(
     output_path: Path,
     *,
     overwrite: bool = False,
+    predict_kwargs: Optional[Mapping[str, object]] = None,
 ) -> Path:
     """Predict one image, validate the Result contract, and atomically save JSON."""
 
-    result = predict_one(pipeline, image_path)
+    result = predict_one(pipeline, image_path, predict_kwargs=predict_kwargs)
     payload = normalize_ocr_result(result)
     return atomic_write_json(output_path, payload, overwrite=overwrite)
