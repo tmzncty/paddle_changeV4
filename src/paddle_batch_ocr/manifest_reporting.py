@@ -6,7 +6,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 from urllib.parse import quote
 
 
@@ -66,6 +66,7 @@ def _readonly_connection(path: Path) -> sqlite3.Connection:
     )
     try:
         connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        connection.execute("PRAGMA query_only=ON")
     except sqlite3.Error as exc:
         raise ManifestReportingError(
             f"cannot open manifest read-only: {resolved}: {exc}"
@@ -81,6 +82,37 @@ def _ensure_jobs_table(connection: sqlite3.Connection) -> None:
     ).fetchone()
     if row is None:
         raise ManifestReportingError("manifest does not contain a jobs table")
+
+
+def _job_filters(
+    *,
+    status: Optional[str],
+    stage: Optional[str],
+    error_class: Optional[str],
+) -> Tuple[str, List[object]]:
+    if status is not None and status not in VALID_STATUSES:
+        raise ValueError(
+            "status must be one of pending, running, success, failed"
+        )
+    if stage is not None and not stage.strip():
+        raise ValueError("stage must be non-empty when provided")
+    if error_class is not None and not error_class.strip():
+        raise ValueError("error_class must be non-empty when provided")
+
+    clauses = []
+    params: List[object] = []
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if stage is not None:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if error_class is not None:
+        clauses.append("error_class = ?")
+        params.append(error_class)
+
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return where, params
 
 
 def read_manifest_report(path: Path) -> ManifestReport:
@@ -152,6 +184,38 @@ def read_manifest_report(path: Path) -> ManifestReport:
         connection.close()
 
 
+def count_manifest_jobs(
+    path: Path,
+    *,
+    status: Optional[str] = None,
+    stage: Optional[str] = None,
+    error_class: Optional[str] = None,
+) -> int:
+    """Count all rows matching the same filters used by paged job queries."""
+
+    where, params = _job_filters(
+        status=status,
+        stage=stage,
+        error_class=error_class,
+    )
+    connection = _readonly_connection(path)
+    try:
+        _ensure_jobs_table(connection)
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM jobs" + where,
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["count"])
+    except sqlite3.Error as exc:
+        raise ManifestReportingError(
+            f"cannot count manifest jobs: {exc}"
+        ) from exc
+    finally:
+        connection.close()
+
+
 def query_manifest_jobs(
     path: Path,
     *,
@@ -163,32 +227,16 @@ def query_manifest_jobs(
 ) -> Tuple[Dict[str, object], ...]:
     """Return deterministic filtered manifest rows without mutating the DB."""
 
-    if status is not None and status not in VALID_STATUSES:
-        raise ValueError(
-            "status must be one of pending, running, success, failed"
-        )
-    if stage is not None and not stage.strip():
-        raise ValueError("stage must be non-empty when provided")
-    if error_class is not None and not error_class.strip():
-        raise ValueError("error_class must be non-empty when provided")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
         raise ValueError("limit must be an integer between 1 and 10000")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be an integer >= 0")
 
-    clauses = []
-    params = []
-    if status is not None:
-        clauses.append("status = ?")
-        params.append(status)
-    if stage is not None:
-        clauses.append("stage = ?")
-        params.append(stage)
-    if error_class is not None:
-        clauses.append("error_class = ?")
-        params.append(error_class)
-
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    where, params = _job_filters(
+        status=status,
+        stage=stage,
+        error_class=error_class,
+    )
     query = (
         "SELECT source_path, stage, source_size, source_mtime_ns, status, "
         "result_path, retry_count, error_class, error_message, worker, device, "
