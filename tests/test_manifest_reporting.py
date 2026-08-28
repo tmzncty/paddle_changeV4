@@ -7,6 +7,7 @@ from pathlib import Path
 from paddle_batch_ocr.manifest import ManifestStore
 from paddle_batch_ocr.manifest_reporting import (
     ManifestReportingError,
+    count_manifest_jobs,
     query_manifest_jobs,
     read_manifest_report,
 )
@@ -51,7 +52,7 @@ class ManifestReportingTests(unittest.TestCase):
             self.assertEqual(report.retry_total, 2)
             self.assertAlmostEqual(report.duration_total_s, 4.0)
 
-    def test_query_filters_and_is_deterministic(self):
+    def test_query_filters_counts_and_is_deterministic(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             manifest = self._build_manifest(root)
@@ -63,6 +64,15 @@ class ManifestReportingTests(unittest.TestCase):
                 error_class="ValueError",
             )
             self.assertEqual(len(failed), 1)
+            self.assertEqual(
+                count_manifest_jobs(
+                    manifest,
+                    status="failed",
+                    stage="ocr",
+                    error_class="ValueError",
+                ),
+                1,
+            )
             self.assertTrue(str(failed[0]["source_path"]).endswith("b.png"))
             self.assertEqual(failed[0]["retry_count"], 2)
             self.assertEqual(failed[0]["error_message"], "bad page again")
@@ -72,6 +82,7 @@ class ManifestReportingTests(unittest.TestCase):
             paths = [row["source_path"] for row in first + second]
             self.assertEqual(paths, sorted(paths))
             self.assertEqual(len(paths), 3)
+            self.assertEqual(count_manifest_jobs(manifest), 3)
 
     def test_reporting_connection_is_actually_read_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
