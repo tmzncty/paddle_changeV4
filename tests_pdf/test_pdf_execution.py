@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fitz
+try:
+    import pymupdf as fitz
+except ImportError:  # PyMuPDF releases before the modern import alias
+    import fitz
 from PIL import Image
 
 from paddle_batch_ocr.cli import main
@@ -106,6 +109,16 @@ class PdfExecutionTests(unittest.TestCase):
             with self.assertRaises(SearchablePdfError):
                 discover_numbered_page_images(root)
 
+    def test_duplicate_page_number_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name in ("page_00001.png", "page_1.jpg"):
+                with Image.new("RGB", (32, 32), "white") as image:
+                    image.save(root / name)
+
+            with self.assertRaises(SearchablePdfError):
+                discover_numbered_page_images(root)
+
     def test_render_refuses_existing_output_without_overwrite(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -120,6 +133,22 @@ class PdfExecutionTests(unittest.TestCase):
                 render_pdf(source, output, dpi=72)
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+
+    def test_render_overwrite_replaces_complete_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.pdf"
+            output = root / "pages"
+            output.mkdir()
+            marker = output / "old.txt"
+            marker.write_text("old", encoding="utf-8")
+            self._make_source_pdf(source, pages=1)
+
+            result = render_pdf(source, output, dpi=72, overwrite=True)
+
+            self.assertEqual(result.page_count, 1)
+            self.assertFalse(marker.exists())
+            self.assertTrue((output / "page_00001.png").is_file())
 
     def test_cli_render_and_searchable_pdf(self):
         with tempfile.TemporaryDirectory() as temp_dir:
