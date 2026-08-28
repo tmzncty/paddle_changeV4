@@ -6,6 +6,7 @@
   "output_root": "./work/output",
   "log_dir": "./work/logs",
   "cache_root": "./work/cache",
+  "manifest_path": "./work/logs/manifest.sqlite3",
   "paddle_config": "./OCR2.yaml",
   "runtime": {
     "device": "auto",
