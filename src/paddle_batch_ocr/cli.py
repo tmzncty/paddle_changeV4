@@ -44,6 +44,8 @@ MANIFEST_CSV_FIELDS = (
     "started_at",
     "finished_at",
     "duration_s",
+    "intended_result_path",
+    "execution_profile_json",
 )
 
 
@@ -195,6 +197,10 @@ def command_manifest_report(args: argparse.Namespace) -> int:
             "error_classes": {},
             "retry_total": 0,
             "duration_total_s": 0.0,
+            "provenance": {
+                "intended_result_count": 0,
+                "execution_profile_count": 0,
+            },
         }
 
     payload = {
@@ -233,8 +239,11 @@ def command_manifest_report(args: argparse.Namespace) -> int:
         for name, count in error_counts.items():
             print(f"  {name}: {count}")
 
+    provenance = payload["provenance"]
     print(f"retry_total: {payload['retry_total']}")
     print(f"duration_total_s: {payload['duration_total_s']:.3f}")
+    print(f"intended_result_count: {provenance['intended_result_count']}")
+    print(f"execution_profile_count: {provenance['execution_profile_count']}")
     return 0
 
 
