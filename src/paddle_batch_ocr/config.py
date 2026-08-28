@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
-from .safety import is_within
+from .safety import UnsafePathError, is_within, validate_destructive_target
 
 
 class ConfigError(ValueError):
@@ -92,6 +92,21 @@ class ProjectConfig:
             raise ConfigError("output_root must not be equal to or nested inside cache_root")
         if self.cache_root == self.output_root or is_within(self.cache_root, self.output_root):
             raise ConfigError("cache_root must not be equal to or nested inside output_root")
+
+        if (
+            self.log_dir == self.cache_root
+            or is_within(self.log_dir, self.cache_root)
+            or is_within(self.cache_root, self.log_dir)
+        ):
+            raise ConfigError("log_dir and cache_root must not overlap")
+
+        if self.manifest_path == self.cache_root or is_within(self.manifest_path, self.cache_root):
+            raise ConfigError("manifest_path must not be stored inside cache_root")
+
+        try:
+            validate_destructive_target(self.cache_root / "temp", self.cache_root)
+        except UnsafePathError as exc:
+            raise ConfigError(f"unsafe cache_root: {exc}") from exc
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
