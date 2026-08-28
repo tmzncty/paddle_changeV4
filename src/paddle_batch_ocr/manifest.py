@@ -44,15 +44,21 @@ def _now_iso() -> str:
 
 
 class ManifestStore:
-    """Small SQLite manifest keyed by ``(source_path, stage)``."""
+    """Small SQLite manifest keyed by ``(source_path, stage)``.
+
+    Each process should open its own ``ManifestStore``. WAL mode plus a 30-second
+    busy timeout lets short worker commits wait for one another instead of
+    immediately failing with ``database is locked``.
+    """
 
     def __init__(self, path: Path):
         self.path = Path(path).expanduser().resolve(strict=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path))
+        self._conn = sqlite3.connect(str(self.path), timeout=30.0)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._init_schema()
 
     def _init_schema(self) -> None:
