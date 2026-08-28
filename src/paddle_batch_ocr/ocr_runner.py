@@ -13,6 +13,7 @@ from .paddlex_adapter import (
     PipelineRef,
     PaddleXResultError,
     create_ocr_pipeline,
+    default_ocr_predict_kwargs,
     parse_paddlex_ocr_result,
     predict_one_to_json,
 )
@@ -134,18 +135,22 @@ def run_ocr_batch(
     manifest_path: Optional[Path] = None,
     resume: bool = True,
     overwrite: bool = False,
+    use_doc_orientation_classify: bool = False,
+    use_doc_unwarping: bool = False,
+    use_textline_orientation: bool = False,
     create_pipeline_fn: Optional[Callable[..., object]] = None,
 ) -> OcrBatchResult:
-    """Run OCR serially with one lazily-created pipeline instance.
-
-    Serial execution is intentional for the first public engine contract. A
-    later multiprocessing layer can initialize one pipeline per worker around
-    this same task/result contract without changing output semantics.
-    """
+    """Run OCR serially with one lazily-created pipeline instance."""
 
     tasks = discover_ocr_tasks(input_path, output_dir)
     if not tasks:
         raise OcrRunnerError(f"no supported OCR images found under {input_path}")
+
+    predict_kwargs = default_ocr_predict_kwargs(
+        use_doc_orientation_classify=use_doc_orientation_classify,
+        use_doc_unwarping=use_doc_unwarping,
+        use_textline_orientation=use_textline_orientation,
+    )
 
     pipeline: Optional[object] = None
 
@@ -220,6 +225,7 @@ def run_ocr_batch(
                     task.source,
                     task.output_json,
                     overwrite=overwrite,
+                    predict_kwargs=predict_kwargs,
                 )
 
                 if store is not None:
