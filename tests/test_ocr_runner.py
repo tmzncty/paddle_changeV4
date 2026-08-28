@@ -25,11 +25,13 @@ class FakeResult:
 class RecordingPipeline:
     def __init__(self, fail_name=None):
         self.calls = []
+        self.predict_kwargs = []
         self.fail_name = fail_name
 
-    def predict_iter(self, *, input):
+    def predict_iter(self, *, input, **kwargs):
         path = Path(input)
         self.calls.append(path.name)
+        self.predict_kwargs.append(kwargs)
         if path.name == self.fail_name:
             return iter([])
         return iter([FakeResult(path.stem)])
@@ -90,8 +92,45 @@ class OcrRunnerTests(unittest.TestCase):
             self.assertEqual(result.failed_count, 0)
             self.assertEqual(len(factory_calls), 1)
             self.assertEqual(pipeline.calls, ["a.png", "b.png"])
+            expected_predict_kwargs = {
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": False,
+            }
+            self.assertEqual(
+                pipeline.predict_kwargs,
+                [expected_predict_kwargs, expected_predict_kwargs],
+            )
             self.assertTrue((root / "json" / "a_result.json").is_file())
             self.assertTrue((root / "json" / "b_result.json").is_file())
+
+    def test_optional_preprocessing_flags_are_forwarded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image = root / "page.png"
+            image.write_bytes(b"x")
+            pipeline = RecordingPipeline()
+
+            result = run_ocr_batch(
+                image,
+                root / "json",
+                create_pipeline_fn=lambda **kwargs: pipeline,
+                use_doc_orientation_classify=True,
+                use_doc_unwarping=True,
+                use_textline_orientation=True,
+            )
+
+            self.assertEqual(result.success_count, 1)
+            self.assertEqual(
+                pipeline.predict_kwargs,
+                [
+                    {
+                        "use_doc_orientation_classify": True,
+                        "use_doc_unwarping": True,
+                        "use_textline_orientation": True,
+                    }
+                ],
+            )
 
     def test_full_resume_does_not_initialize_pipeline(self):
         with tempfile.TemporaryDirectory() as temp_dir:
