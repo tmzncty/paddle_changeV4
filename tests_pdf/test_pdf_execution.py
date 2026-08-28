@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +13,7 @@ except ImportError:  # PyMuPDF releases before the modern import alias
 from PIL import Image
 
 from paddle_batch_ocr.cli import main
-from paddle_batch_ocr.pdf_render import render_pdf
+from paddle_batch_ocr.pdf_render import PdfRenderError, render_pdf
 from paddle_batch_ocr.searchable_pdf import (
     SearchablePdfError,
     build_searchable_pdf,
@@ -149,6 +150,48 @@ class PdfExecutionTests(unittest.TestCase):
             self.assertEqual(result.page_count, 1)
             self.assertFalse(marker.exists())
             self.assertTrue((output / "page_00001.png").is_file())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation may require elevated privileges on Windows")
+    def test_render_refuses_symlinked_output_before_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.pdf"
+            real_output = root / "real-pages"
+            link_output = root / "pages"
+            real_output.mkdir()
+            link_output.symlink_to(real_output, target_is_directory=True)
+            self._make_source_pdf(source, pages=1)
+
+            with self.assertRaises(PdfRenderError):
+                render_pdf(source, link_output, dpi=72, overwrite=True)
+
+            self.assertEqual(list(real_output.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "symlink creation may require elevated privileges on Windows")
+    def test_searchable_pdf_refuses_symlinked_output_before_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.pdf"
+            images = root / "pages"
+            json_dir = root / "ocr"
+            real_output = root / "real.pdf"
+            link_output = root / "searchable.pdf"
+            json_dir.mkdir()
+            link_output.symlink_to(real_output)
+            self._make_source_pdf(source, pages=1)
+            render_pdf(source, images, dpi=72)
+            self._write_ocr_json(json_dir / "page_00001.json", "symlink test")
+
+            with self.assertRaises(SearchablePdfError):
+                build_searchable_pdf(
+                    images,
+                    json_dir,
+                    link_output,
+                    overwrite=True,
+                    fontname="helv",
+                )
+
+            self.assertFalse(real_output.exists())
 
     def test_cli_render_and_searchable_pdf(self):
         with tempfile.TemporaryDirectory() as temp_dir:
