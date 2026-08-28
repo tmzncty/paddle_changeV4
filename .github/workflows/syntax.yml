@@ -56,6 +56,7 @@ jobs:
           paddle-batch-ocr manifest status --config examples/config.json --json
           paddle-batch-ocr render --help
           paddle-batch-ocr searchable-pdf --help
+          paddle-batch-ocr ocr --help
 
   pdf-smoke:
     runs-on: ubuntu-latest
