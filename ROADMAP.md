@@ -18,18 +18,22 @@
 
 目标：在动结构之前，先保存现有脚本到底做什么。
 
-- [ ] 为每个 legacy 脚本建立用途与输入输出说明
-- [ ] 记录 `highocr4_f1_pdf_img.py` 的完整处理阶段
-- [ ] 记录 `pdf_creator_with_text_layer7.py` 的 JSON schema 假设
-- [ ] 收集多个历史 JSON 命名格式
+- [ ] 为每个 legacy 脚本建立完整用途、输入输出与 replacement 表
+- [x] 记录 `highocr4_f1_pdf_img.py` 的主要处理阶段与风险默认值
+- [x] 记录 `pdf_creator_with_text_layer7.py` 的 JSON schema、命名和文本层假设
+- [x] 冻结历史 JSON 页文件命名优先级
+- [x] 冻结 `rec_text` / `rec_texts` 两种历史字段
+- [x] 冻结 v7 两栏排序与 polygon 0/2 点文本框行为
 - [ ] 建立最小公开 fixture：1 个小 PDF、若干图片、对应匿名化 OCR JSON
-- [ ] 建立 golden output / smoke test
+- [ ] 建立 golden searchable-PDF output / smoke test
+
+当前行为合同见 [`docs/LEGACY_BEHAVIOR.md`](docs/LEGACY_BEHAVIOR.md)。
 
 **原则：** 没有行为基线前，不删除旧脚本。
 
 ## M2 — Configuration and safety layer
 
-建立统一配置模型，消灭源码中的机器专属路径。
+统一配置模型已经建立，源码中的机器专属策略不再作为新实现的默认值。
 
 当前 package 已支持：
 
@@ -37,6 +41,7 @@
 - [x] output root
 - [x] log directory
 - [x] cache root
+- [x] manifest path（默认 `<log_dir>/manifest.sqlite3`）
 - [x] Paddle config path
 - [x] OCR workers
 - [x] PDF preparation workers
@@ -53,12 +58,14 @@
 
 - [x] 默认并发采用保守值（当前均为 1）
 - [x] 递归删除限制在明确 cache root 内
-- [x] 删除前做 path containment 检查
-- [x] 拒绝 filesystem root / home / cwd 等危险目标
+- [x] cache cleanup 只作用于 `<cache_root>/temp`
+- [x] 删除前做 realpath containment 检查
+- [x] 拒绝 filesystem root / home / cwd 作为 destructive root
 - [x] destructive operation 默认 dry-run
 - [x] 默认 `overwrite=false`
-- [x] 输入、输出、缓存路径做冲突检测
-- [ ] 将 legacy `clear_cache()` 全部迁移到新安全层
+- [x] 输入、输出、日志、缓存、manifest 做路径冲突检测
+- [x] log / manifest 不允许落入 destructive cache boundary
+- [ ] 将 legacy `clear_cache()` 调用全部迁移到新安全层
 - [ ] overwrite / resume 字段真正接入 OCR / PDF engine
 
 ## M3 — Package and unified CLI
@@ -73,6 +80,11 @@ src/paddle_batch_ocr/
   config.py
   discovery.py
   doctor.py
+  io_utils.py
+  layout.py
+  manifest.py
+  naming.py
+  ocr_schema.py
   safety.py
 ```
 
@@ -83,9 +95,14 @@ paddle-batch-ocr doctor
 paddle-batch-ocr doctor --json
 paddle-batch-ocr scan --config CONFIG
 paddle-batch-ocr cache clean --config CONFIG
+paddle-batch-ocr manifest status --config CONFIG
 ```
 
-其中 cache clean 默认只做 dry-run，必须显式 `--execute`。
+其中：
+
+- `cache clean` 默认只做 dry-run，必须显式 `--execute`；
+- `manifest status` 在数据库不存在时不会制造空数据库；
+- package 可通过 `pip install --no-deps .` 安装，不强制拉取 Paddle/CUDA 依赖。
 
 计划继续提供：
 
@@ -110,13 +127,21 @@ paddle-batch-ocr run --config CONFIG
 
 ## M4 — OCR engine cleanup
 
+已经完成的 engine-independent 基础：
+
+- [x] `rec_text` / `rec_texts` OCR JSON schema adapter
+- [x] OCR polygon/text 长度与坐标结构验证
+- [x] 原子 JSON 写入 primitive（同目录 temp + fsync + atomic publish）
+- [x] 默认禁止覆盖已存在 JSON
+
+仍需接入真正 PaddleX/PaddleOCR 执行层：
+
 - [ ] 每个 worker 只初始化一次 pipeline
 - [ ] 明确 multiprocessing start method
 - [ ] 对 CPU / GPU 执行模式分别建配置
 - [ ] 将 stdout 抑制从全局替换改为更受控实现
-- [ ] 统一 OCR result adapter
-- [ ] 兼容 generator / list / single result
-- [ ] 原子写 JSON（临时文件 + rename）
+- [ ] 统一 PaddleX `predict()` generator / list / single result adapter
+- [ ] 将 atomic JSON writer 接入 OCR engine
 - [ ] 明确失败重试策略
 - [ ] 对损坏图片和空 OCR 结果区分状态
 
@@ -132,45 +157,63 @@ paddle-batch-ocr run --config CONFIG
 
 ### Searchable PDF
 
-- [ ] 定义稳定 OCR JSON schema adapter
-- [ ] 支持历史 `rec_text` / `rec_texts` 等字段差异
-- [ ] 页码匹配不依赖脆弱字符串替换
-- [ ] 明确坐标系转换
+基础兼容层：
+
+- [x] 定义稳定 OCR JSON schema adapter
+- [x] 支持历史 `rec_text` / `rec_texts` 字段差异
+- [x] 抽出历史 page JSON 命名优先级
+- [x] 冻结 v7 两栏排序 heuristic
+- [x] 冻结 v7 polygon 0/2 点文本矩形行为
+
+执行层仍需完成：
+
+- [ ] 新 searchable-PDF engine 使用这些 adapter
+- [ ] 明确新坐标系转换策略
 - [ ] 文本层字体、旋转、缩放建立回归测试
 - [ ] 支持逐页失败报告而不是整本静默失败
+- [ ] 判断哪些 legacy heuristic 应保留、哪些应作为 bug 修复
 
 ## M6 — Resume, manifest and observability
 
-为几十万页任务引入 manifest / job state，而不是只靠“目标文件是否存在”。
+SQLite manifest 核心已经建立，以 `(source_path, stage)` 作为任务键。
 
-建议每个任务记录：
+已记录字段：
 
-- source path
-- source size / mtime / optional hash
-- stage
-- started_at / finished_at
-- result path
-- status
-- retry count
-- error class
-- worker / device information
-- timing metrics
+- [x] source path
+- [x] source size / mtime
+- [x] stage
+- [x] started_at / finished_at
+- [x] result path
+- [x] status (`pending / running / success / failed`)
+- [x] retry count
+- [x] error class / message
+- [x] worker / device information
+- [x] timing metrics
 
-目标：
+已完成基础能力：
 
-- [ ] crash-safe resume
-- [ ] 可重新执行失败项
-- [ ] 输入变化后识别旧结果失效
-- [ ] 输出统计 JSON / CSV
-- [ ] 不扫描几十万文件才能知道整体进度
+- [x] SQLite WAL + busy timeout
+- [x] 源文件变化后使旧 success 失效为 pending
+- [x] success 的结果文件丢失后重新判定为需要执行
+- [x] failure 记录 retry/error 信息
+- [x] stage 独立状态
+- [x] CLI status 统计
+
+仍需执行层集成：
+
+- [ ] OCR / render / searchable-PDF worker 全部写入 manifest
+- [ ] 真正 crash-safe end-to-end resume
+- [ ] 从 manifest 定向重新执行失败项
+- [ ] 输出完整统计 JSON / CSV
+- [ ] 不扫描几十万源文件即可得到完整整体进度
 
 ## M7 — Tests and CI
 
 测试分层：
 
 1. **No-dependency syntax checks** — [x] Python 3.9 / 3.12；
-2. **Pure Python unit tests** — [x] discovery / safety / config / cache / CLI 起步；
-3. **Package install + CLI smoke** — [x] `pip install --no-deps .` + doctor；
+2. **Pure Python unit tests** — [x] discovery / safety / config / cache / CLI / naming / OCR schema / layout / atomic I/O / manifest；
+3. **Package install + CLI smoke** — [x] `pip install --no-deps .` + version + doctor；
 4. **CPU OCR smoke test** — [ ]；
 5. **GPU manual / self-hosted benchmark** — [ ]；
 6. **Golden PDF tests** — [ ] 页数、文本可搜索性、坐标误差。
