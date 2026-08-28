@@ -26,6 +26,39 @@ Upstream references:
 - https://paddlepaddle.github.io/PaddleX/3.7/en/pipeline_usage/instructions/pipeline_python_API.html
 - https://paddlepaddle.github.io/PaddleX/latest/en/pipeline_usage/tutorials/ocr_pipelines/OCR.html
 
+## CPU runtime compatibility note
+
+PaddlePaddle 3.3.0 currently has a known CPU inference regression in its
+PIR-to-oneDNN path. The failure is typically:
+
+```text
+NotImplementedError: (Unimplemented)
+ConvertPirAttribute2RuntimeAttribute not support
+[pir::ArrayAttribute<pir::DoubleAttribute>]
+```
+
+This is an upstream PaddlePaddle framework bug rather than a PaddleX result or
+pipeline-adapter error. PaddleX issue #4970 identifies the same failure as a
+Paddle framework issue, and PaddlePaddle issue #77340 documents downgrading to
+PaddlePaddle 3.2.2 as the temporary workaround.
+
+Accordingly, the public CPU smoke test currently uses:
+
+```text
+Python 3.12
+PaddlePaddle 3.2.2 CPU
+PaddleX 3.7.x
+```
+
+This is a tested compatibility path, not a claim that PaddlePaddle 3.3.x is
+unsupported in every environment. The smoke should move back to a current
+3.3.x release once the upstream CPU regression is fixed and verified.
+
+Upstream bug references:
+
+- https://github.com/PaddlePaddle/Paddle/issues/77340
+- https://github.com/PaddlePaddle/PaddleX/issues/4970
+
 ## Installation policy
 
 PaddlePaddle is deliberately not a normal project dependency because CPU and GPU
@@ -40,6 +73,15 @@ python -m pip install '.[ocr]'
 
 The `ocr` extra currently provides `paddlex[ocr]>=3.7,<4`; it does not choose a
 PaddlePaddle CPU/GPU runtime for you.
+
+For CPU environments affected by the 3.3.x oneDNN regression, the currently
+validated workaround is:
+
+```bash
+python -m pip install paddlepaddle==3.2.2 \
+  -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+python -m pip install '.[ocr]'
+```
 
 ## Serial execution command
 
@@ -65,6 +107,44 @@ paddle-batch-ocr ocr images/ --output json/ --manifest work/manifest.sqlite3
 The first public execution contract is intentionally serial. One pipeline is
 created lazily and reused for every image that actually needs inference. A full
 resume that only adopts/skips valid existing JSON does not initialize the model.
+If pipeline initialization itself fails, that failure is cached for the batch so
+the runner does not repeatedly initialize or redownload the same broken runtime
+for every image.
+
+## Minimal OCR pipeline for smoke / clean scans
+
+The upstream default `OCR` pipeline initializes optional document-orientation,
+unwarping and text-line-orientation modules even when those modules are disabled
+at prediction time. For a pure detection+recognition smoke test this causes
+unnecessary model downloads.
+
+`configs/paddlex/ocr-ci-small.yaml` therefore disables those optional modules at
+pipeline initialization and uses `PP-OCRv6_small_det` + `PP-OCRv6_small_rec`.
+It follows the current PaddleX 3.7 pipeline configuration schema and keeps the
+smoke focused on the core OCR path.
+
+This file is a CI/reference profile, not a universal accuracy recommendation.
+Production users can provide their own PaddleX pipeline YAML through
+`--pipeline`.
+
+## Prediction-time optional modules
+
+For the project’s historical plain OCR use case, these modules are disabled by
+default at prediction time:
+
+```text
+use_doc_orientation_classify = False
+use_doc_unwarping = False
+use_textline_orientation = False
+```
+
+They can be explicitly enabled with:
+
+```bash
+--use-doc-orientation-classify
+--use-doc-unwarping
+--use-textline-orientation
+```
 
 ## Result normalization
 
@@ -99,7 +179,10 @@ provenance record is added before atomic JSON publication.
 - stale existing output requires explicit overwrite;
 - one image failure is recorded without aborting every later image;
 - the command exits non-zero when any task fails;
-- symlinked input/output paths are rejected at discovery/publication boundaries.
+- symlinked input/output paths and symlinked manifest database targets are
+  rejected at discovery/publication boundaries;
+- `--json` keeps stdout machine-readable; PaddleX/model-download chatter is
+  temporarily routed to stderr for OCR execution only.
 
 ## Concurrency
 
