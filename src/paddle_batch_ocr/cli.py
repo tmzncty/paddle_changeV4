@@ -12,6 +12,7 @@ from . import __version__
 from .cache import clean_temp_cache
 from .config import ConfigError, ProjectConfig, load_config
 from .doctor import collect_doctor_report
+from .manifest import ManifestStore
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
@@ -106,6 +107,33 @@ def command_cache_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_manifest_status(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.manifest_path.exists():
+        with ManifestStore(config.manifest_path) as store:
+            summary = store.summary()
+    else:
+        summary = {}
+
+    payload = {
+        "manifest_path": str(config.manifest_path),
+        "exists": config.manifest_path.exists(),
+        "status": summary,
+        "total": sum(summary.values()),
+    }
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"manifest: {payload['manifest_path']}")
+        print(f"exists: {payload['exists']}")
+        if summary:
+            for status, count in sorted(summary.items()):
+                print(f"{status:8} {count:8d}")
+        print(f"total    {payload['total']:8d}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paddle-batch-ocr",
@@ -138,6 +166,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not recreate the temp directory after deletion",
     )
     clean.set_defaults(func=command_cache_clean)
+
+    manifest = subparsers.add_parser("manifest", help="Inspect persistent job state")
+    manifest_subparsers = manifest.add_subparsers(dest="manifest_command", required=True)
+    status = manifest_subparsers.add_parser("status", help="Show manifest status counts")
+    status.add_argument("--config", required=True, help="Project JSON/YAML config")
+    status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    status.set_defaults(func=command_manifest_status)
 
     return parser
 
