@@ -149,7 +149,13 @@ def _execute_parallel_task(task: OcrTask) -> OcrTaskResult:
     except Exception as exc:
         if store is not None:
             try:
-                store.mark_failure(task.source, "ocr", exc)
+                store.mark_failure(
+                    task.source,
+                    "ocr",
+                    exc,
+                    intended_result_path=task.output_json,
+                    execution_profile=config.execution_profile,
+                )
             except Exception:
                 pass
         return OcrTaskResult(
@@ -252,7 +258,13 @@ def _prepare_tasks(
             except Exception as exc:
                 if store is not None:
                     try:
-                        store.mark_failure(task.source, "ocr", exc)
+                        store.mark_failure(
+                            task.source,
+                            "ocr",
+                            exc,
+                            intended_result_path=task.output_json,
+                            execution_profile=execution_profile,
+                        )
                     except Exception:
                         pass
                 prepared[index] = OcrTaskResult(
@@ -351,7 +363,13 @@ def run_ocr_parallel(
                 if manifest_path is not None:
                     try:
                         with ManifestStore(manifest_path) as store:
-                            store.mark_failure(task.source, "ocr", exc)
+                            store.mark_failure(
+                                task.source,
+                                "ocr",
+                                exc,
+                                intended_result_path=task.output_json,
+                                execution_profile=execution_profile,
+                            )
                     except Exception:
                         pass
                 results[index] = OcrTaskResult(
