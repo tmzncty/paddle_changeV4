@@ -8,7 +8,7 @@
 - [x] 明确 destructive behavior 与高负载风险
 - [x] 建立重构路线图
 - [x] 添加最小贡献说明
-- [ ] 添加纯语法 CI
+- [x] 添加 Python 3.9 / 3.12 baseline CI
 - [ ] 打开并维护 issue tracker
 - [ ] 补充 repository topics / description
 
@@ -31,72 +31,82 @@
 
 建立统一配置模型，消灭源码中的机器专属路径。
 
-计划字段：
+当前 package 已支持：
 
-- input sources
-- output root
-- log directory
-- PaddleX home / cache directory
-- OCR config path
-- OCR workers
-- PDF preparation workers
-- render workers
-- batch size
-- device (`cpu`, `gpu`, future auto)
-- temporary image policy
-- overwrite policy
-- resume policy
+- [x] input sources
+- [x] output root
+- [x] log directory
+- [x] cache root
+- [x] Paddle config path
+- [x] OCR workers
+- [x] PDF preparation workers
+- [x] render workers
+- [x] batch size
+- [x] device (`auto`, `cpu`, `gpu`, `gpu:N`)
+- [x] temporary image policy 字段
+- [x] overwrite policy 字段
+- [x] resume policy 字段
+- [x] JSON 项目配置
+- [x] optional YAML 项目配置
 
 安全要求：
 
-- [ ] 默认并发采用保守值或自动探测
-- [ ] 递归删除必须限制在明确的 workspace/cache root 内
-- [ ] 删除前做 path containment 检查
-- [ ] 禁止对 `/`、home、输入根目录等危险目标执行清理
-- [ ] destructive operation 提供 dry-run
-- [ ] 默认不覆盖已有 OCR JSON / PDF
-- [ ] 对输入、输出、缓存路径做冲突检测
+- [x] 默认并发采用保守值（当前均为 1）
+- [x] 递归删除限制在明确 cache root 内
+- [x] 删除前做 path containment 检查
+- [x] 拒绝 filesystem root / home / cwd 等危险目标
+- [x] destructive operation 默认 dry-run
+- [x] 默认 `overwrite=false`
+- [x] 输入、输出、缓存路径做冲突检测
+- [ ] 将 legacy `clear_cache()` 全部迁移到新安全层
+- [ ] overwrite / resume 字段真正接入 OCR / PDF engine
 
 ## M3 — Package and unified CLI
 
-目标结构：
+当前结构：
 
 ```text
 src/paddle_batch_ocr/
   __init__.py
+  cache.py
   cli.py
   config.py
   discovery.py
-  models.py
-  ocr.py
-  pdf_render.py
-  searchable_pdf.py
-  cache.py
-  progress.py
+  doctor.py
   safety.py
 ```
 
-计划命令：
+已完成：
 
 ```bash
 paddle-batch-ocr doctor
-paddle-batch-ocr scan --config config.yaml
-paddle-batch-ocr render INPUT --output DIR
-paddle-batch-ocr ocr --config config.yaml
-paddle-batch-ocr searchable-pdf --config config.yaml
-paddle-batch-ocr run --config config.yaml
+paddle-batch-ocr doctor --json
+paddle-batch-ocr scan --config CONFIG
+paddle-batch-ocr cache clean --config CONFIG
 ```
 
-`doctor` 应报告：
+其中 cache clean 默认只做 dry-run，必须显式 `--execute`。
 
-- Python 版本
-- Paddle / PaddleX 版本
-- CUDA / GPU 可见性
-- 关键依赖
-- 可用 CPU / 内存
-- 输入输出磁盘可用空间
-- cache 目录
-- 配置中的潜在危险项
+计划继续提供：
+
+```bash
+paddle-batch-ocr render INPUT --output DIR
+paddle-batch-ocr ocr --config CONFIG
+paddle-batch-ocr searchable-pdf --config CONFIG
+paddle-batch-ocr run --config CONFIG
+```
+
+`doctor` 当前已报告：
+
+- [x] Python 版本
+- [x] 平台
+- [x] Paddle / Paddle GPU / PaddleX / PaddleOCR package version
+- [x] `nvidia-smi` GPU / memory / driver 摘要
+- [x] PyMuPDF / Pillow 等关键 package version
+- [x] 可用 CPU / 物理内存
+- [x] output / log / cache 对应磁盘可用空间
+- [x] 输入与 Paddle config 缺失警告
+- [x] 明显高 worker / batch 参数警告
 
 ## M4 — OCR engine cleanup
 
@@ -158,20 +168,20 @@ paddle-batch-ocr run --config config.yaml
 
 测试分层：
 
-1. **No-dependency syntax checks** — 每个 PR 都能跑；
-2. **Pure Python unit tests** — 路径、配置、命名、schema adapter、安全检查；
-3. **CPU smoke test** — 小样本端到端；
-4. **GPU manual / self-hosted benchmark** — 不要求公共 GitHub runner 安装 CUDA；
-5. **Golden PDF tests** — 验证页数、文本可搜索性、坐标误差。
+1. **No-dependency syntax checks** — [x] Python 3.9 / 3.12；
+2. **Pure Python unit tests** — [x] discovery / safety / config / cache / CLI 起步；
+3. **Package install + CLI smoke** — [x] `pip install --no-deps .` + doctor；
+4. **CPU OCR smoke test** — [ ]；
+5. **GPU manual / self-hosted benchmark** — [ ]；
+6. **Golden PDF tests** — [ ] 页数、文本可搜索性、坐标误差。
 
 ## M8 — Reproducible environments
 
 不要把 Paddle CPU/GPU 依赖强行塞进一个 requirements 文件。
 
-计划：
-
-- [ ] `pyproject.toml` 管理项目本身与普通 Python 依赖
-- [ ] 文档化 Paddle / PaddleX 安装步骤
+- [x] `pyproject.toml` 管理项目本身
+- [x] YAML 配置作为 optional extra
+- [ ] 文档化 Paddle / PaddleX 当前安装步骤
 - [ ] 给出 CPU 环境示例
 - [ ] 给出 CUDA 环境示例
 - [ ] 记录已验证版本矩阵
@@ -184,7 +194,7 @@ paddle-batch-ocr run --config config.yaml
 - [ ] 将历史脚本移动到 `legacy/`
 - [ ] 每个脚本标记 replacement
 - [ ] 发布第一个真正的 semantic version
-- [ ] changelog 从 commit history / release notes 维护，不再堆在 README 顶部
+- [ ] changelog 从 commit history / release notes 维护
 - [ ] README 只保留当前使用方式
 
 ## Non-goals
