@@ -17,8 +17,7 @@ from .doctor import collect_doctor_report
 from .manifest import ManifestStore
 from .manifest_reporting import (
     ManifestReportingError,
-    count_manifest_jobs,
-    query_manifest_jobs,
+    query_manifest_job_page,
     read_manifest_report,
 )
 from .ocr_runner import OcrRunnerError, run_ocr_batch
@@ -244,7 +243,7 @@ def command_manifest_jobs(args: argparse.Namespace) -> int:
     exists = _manifest_may_exist(config.manifest_path)
 
     if exists:
-        rows = query_manifest_jobs(
+        page = query_manifest_job_page(
             config.manifest_path,
             status=args.status,
             stage=args.stage,
@@ -252,12 +251,8 @@ def command_manifest_jobs(args: argparse.Namespace) -> int:
             limit=args.limit,
             offset=args.offset,
         )
-        total_matching = count_manifest_jobs(
-            config.manifest_path,
-            status=args.status,
-            stage=args.stage,
-            error_class=args.error_class,
-        )
+        rows = page.jobs
+        total_matching = page.total_matching
     else:
         rows = ()
         total_matching = 0
