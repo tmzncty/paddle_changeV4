@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from paddle_batch_ocr.cache import clean_temp_cache
+from paddle_batch_ocr.safety import UnsafePathError
 
 
 class CacheTests(unittest.TestCase):
@@ -45,6 +46,20 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(result.executed)
             self.assertFalse(result.recreated)
             self.assertFalse(target.exists())
+
+    def test_rejects_symlinked_temp_even_when_target_is_inside_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "cache"
+            actual = root / "actual-temp"
+            actual.mkdir(parents=True)
+            marker = actual / "keep.txt"
+            marker.write_text("keep", encoding="utf-8")
+            (root / "temp").symlink_to(actual, target_is_directory=True)
+
+            with self.assertRaises(UnsafePathError):
+                clean_temp_cache(root, execute=True)
+
+            self.assertTrue(marker.exists())
 
 
 if __name__ == "__main__":
