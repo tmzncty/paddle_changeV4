@@ -65,6 +65,16 @@ class PathSafetyTests(unittest.TestCase):
                 root.resolve(),
             )
 
+    def test_validate_rejects_home_as_allowed_root(self):
+        home = Path.home().resolve()
+        with self.assertRaises(UnsafePathError):
+            validate_destructive_target(home / "temp", home)
+
+    def test_validate_rejects_cwd_as_allowed_root(self):
+        cwd = Path.cwd().resolve()
+        with self.assertRaises(UnsafePathError):
+            validate_destructive_target(cwd / "temp", cwd)
+
     @unittest.skipIf(os.name == "nt", "filesystem-root assertion differs on Windows")
     def test_validate_rejects_filesystem_root_as_allowed_root(self):
         with self.assertRaises(UnsafePathError):
