@@ -39,6 +39,36 @@ class ConfigTests(unittest.TestCase):
                     base_dir=base,
                 )
 
+    def test_rejects_string_boolean_instead_of_coercing_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            with self.assertRaises(ConfigError):
+                config_from_mapping(
+                    {
+                        "input_sources": [{"path": "inputs", "type": "pdf"}],
+                        "output_root": "output",
+                        "log_dir": "logs",
+                        "cache_root": "cache",
+                        "overwrite": "false",
+                    },
+                    base_dir=base,
+                )
+
+    def test_rejects_malformed_gpu_selector(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            with self.assertRaises(ConfigError):
+                config_from_mapping(
+                    {
+                        "input_sources": [{"path": "inputs", "type": "image"}],
+                        "output_root": "out",
+                        "log_dir": "logs",
+                        "cache_root": "cache",
+                        "runtime": {"device": "gpu:"},
+                    },
+                    base_dir=base,
+                )
+
     def test_rejects_output_nested_inside_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
