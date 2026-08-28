@@ -1,196 +1,100 @@
-# Current Repository State
+# Current repository state
 
-此文档记录重构开始时（2026-08）的仓库状态，用于避免后续整理过程中遗忘 legacy 行为和已知问题。
+This document records the repository after the first public-refactor foundation. It distinguishes the proven legacy processing code from the new package being built around it.
 
-## Repository shape
+## What the repository actually is
 
-当前仓库没有 Python package 目录，主要由根目录脚本组成：
+The project is not a fork of PaddlePaddle itself. It is a high-throughput document digitization workflow built around PaddleX / PaddleOCR plus PDF tooling.
 
-```text
-.gitignore
-LICENSE
-OCR.yaml
-OCR2.yaml
-README.md
-del_10min_cache.py
-highocr3_f2.py
-highocr3_f2_pdf.py
-highocr3_f2_pdf2.py
-highocr4_f1_pdf_img.py
-pdf_creator_with_text_layer5.py
-pdf_creator_with_text_layer6.py
-pdf_creator_with_text_layer7.py
-pdf_searchable2.5.py
-pdf_searchable3.py
-pdf_to_png.py
-```
+The historical code has been used for workloads involving large directory trees, hundreds of books and hundreds of thousands of pages. Its most valuable characteristics are operational rather than architectural: skipping existing results, separating PDF preparation from OCR, process-local model initialization, preserving errors, rebuilding searchable PDFs, and surviving long jobs under CPU/GPU/memory/disk pressure.
 
-不存在：
+## Legacy surface
 
-- `src/`
-- `tests/`
-- `pyproject.toml`
-- dependency lock
-- release-oriented changelog
-- stable CLI
-- public sample fixture
+The root scripts are preserved as reference implementations while their behavior is frozen with tests and migrated behind a package API.
 
-## Known correctness / reproducibility blockers
+Key files:
 
-### 1. Missing `find_json_parent.py`
+- `highocr4_f1_pdf_img.py`: current main reference for mixed PDF/image OCR orchestration;
+- `pdf_creator_with_text_layer7.py`: current main reference for searchable-PDF reconstruction;
+- older `highocr3_*`, `pdf_creator_with_text_layer5/6.py` and `pdf_searchable*` files: historical behavior variants;
+- `del_10min_cache.py`: historical cache maintenance with destructive behavior;
+- `OCR.yaml` / `OCR2.yaml`: historical PaddleX pipeline examples.
 
-`pdf_creator_with_text_layer7.py` currently contains:
+Known legacy hazards include hard-coded `/media/tmzn/...` paths, aggressive fixed worker counts, global PaddleX-cache assumptions and recursive deletion. Those are retained only as history; they are not new defaults.
 
-```python
-from find_json_parent import find_unique_json_parent_paths
-```
+## New package surface
 
-but the referenced module is not present in the repository tree.
+The refactor now has an installable `src/paddle_batch_ocr/` package with:
 
-因此该脚本不能在一次干净 clone 后按当前状态直接运行。重构时需要先恢复/重写并测试这段 discovery 逻辑，而不是在 README 中继续宣称代码可直接复现。
+- `config.py`: JSON / optional YAML project configuration and path-conflict validation;
+- `safety.py`: realpath-based destructive-boundary validation;
+- `cache.py`: dry-run-first cleanup limited to `<cache_root>/temp`;
+- `doctor.py`: dependency-light runtime, package, GPU and disk diagnostics;
+- `cli.py`: `doctor`, `scan`, `cache clean`, and `manifest status`;
+- `discovery.py`: deterministic JSON-directory discovery;
+- `naming.py`: historical image-to-JSON filename matching precedence;
+- `ocr_schema.py`: normalized `rec_text` / `rec_texts` OCR JSON handling;
+- `layout.py`: frozen v7 searchable-PDF ordering and rectangle heuristics;
+- `io_utils.py`: atomic JSON publication with no-overwrite default;
+- `manifest.py`: SQLite/WAL job state keyed by source and stage.
 
-### 2. README historically referenced a missing script
+The package is intentionally useful without importing or installing Paddle. This allows public CI, tooling and safety checks to stay lightweight while the GPU execution layer is migrated separately.
 
-旧 README 的 v2.0.0 usage section 使用：
+## Current safety defaults
 
-```bash
-python pdf_creator_with_text_layer7_copy.py ...
-```
+New code currently enforces:
 
-但仓库中没有该文件。
+- worker counts and batch size default to `1`;
+- output overwrite defaults to disabled;
+- cache deletion defaults to dry-run;
+- deletion is restricted to `<cache_root>/temp`;
+- filesystem root, user home and current working directory cannot be destructive roots;
+- input roots cannot contain output/log/cache/manifest paths;
+- output and cache cannot overlap;
+- logs and cache cannot overlap;
+- the manifest cannot be stored inside cache;
+- containment is based on resolved paths, not string prefixes.
 
-### 3. Machine-specific absolute paths
+These safeguards do not retroactively modify the root legacy scripts.
 
-多个脚本包含开发机器专属路径，例如：
+## Resume/state baseline
 
-```text
-/media/tmzn/DATA4/...
-/media/tmzn/DATA5/...
-```
+The new SQLite manifest records source size/mtime, stage, status, result path, retry count, errors, worker/device and timing. It uses WAL plus a busy timeout for short multi-worker writes. It invalidates successful state when the source changes and re-runs a successful task if its recorded output disappears.
 
-这些路径需要迁移到配置文件 / CLI。
+The OCR/render/searchable-PDF execution engines still need to be wired to this store before end-to-end resume is complete.
 
-### 4. Aggressive concurrency values are embedded in source
+## Compatibility baseline
 
-历史脚本中可以看到诸如：
+The first refactor also freezes several historical behaviors so later cleanup cannot silently change output:
 
-- OCR workers: 16
-- PDF preparation workers: 8
-- render workers: 24
-- searchable PDF worker count: 32
-- OCR batch sizes up to 32 / 64
+- v7 page-image to JSON filename precedence;
+- v6 `rec_text` and v7 `rec_texts` schema variants;
+- polygon/text count validation;
+- v7 two-column ordering heuristic;
+- v7 polygon point 0/2 text rectangle construction.
 
-这些数字来自特定硬件环境，不应成为公开项目的默认值。
+These behaviors are compatibility facts, not declarations that every heuristic is correct. Golden fixtures will decide which behaviors remain compatibility modes and which become explicit bug fixes.
 
-### 5. Cache cleanup is coupled to normal execution
+## CI baseline
 
-`highocr3_f2.py` 和后续脚本包含 PaddleX cache 清理逻辑；较新脚本还尝试管理 `PADDLEX_HOME` 与 `~/.paddlex/temp`。
+Public CI runs on Python 3.9 and 3.12 and currently validates:
 
-当前主要风险：
+- compilation of all new package modules and tests;
+- syntax compilation of the legacy scripts;
+- dependency-free unit tests;
+- `pip install --no-deps .`;
+- console-script version and `doctor --json` smoke tests;
+- `manifest status` smoke test against the example config.
 
-- recursive deletion；
-- symlink handling；
-- cache path 与输入/输出路径没有统一 boundary validation；
-- cache cleanup 与正常 OCR 启动耦合。
+Paddle/CUDA smoke tests are intentionally separate future work; GitHub-hosted runners should not be treated as representative GPU deployment hosts.
 
-重构后应把 cache maintenance 变为单独、可预览、可拒绝危险路径的操作。
+## What is deliberately not done yet
 
-## Legacy implementation strengths worth preserving
+- no new PaddleX/PaddleOCR execution engine is wired into the CLI;
+- no new PDF-render command is wired into the CLI;
+- no new searchable-PDF writer has replaced the legacy writer;
+- no CPU/GPU Paddle version matrix is claimed;
+- no legacy script has been deleted merely to make the tree look clean;
+- no historical commits have been rewritten.
 
-代码虽然结构混乱，但并不是“全部推倒重来”的对象。以下经验值得保留：
-
-### Batch-oriented workflow
-
-现有实现关注的是成百上千 PDF / 大量图片，而不是 demo 级单文件调用。
-
-### Resume by existing outputs
-
-多个阶段会检查已有 JSON / 页面输出并跳过重复工作。这是长时间任务非常重要的行为，后续应升级为 manifest-based resume，而不是删除。
-
-### Error isolation
-
-部分 OCR 路径会把失败图片复制到错误目录，并记录逐文件错误，避免单页错误直接终止整批数据。
-
-### Pipeline initialization per worker
-
-OCR worker 使用 initializer 创建 PaddleX pipeline，避免对每张图片重新初始化模型。这个方向应保留并明确生命周期。
-
-### Mixed PDF / image inputs
-
-`highocr4_f1_pdf_img.py` 已经尝试统一处理 PDF 与图片输入，是未来 unified CLI 的重要来源。
-
-### Searchable PDF reconstruction
-
-仓库里已经积累了多版 OCR coordinate → PDF text layer 的实现，这部分应通过 fixture 和 golden tests 固化，而不是重新凭感觉实现。
-
-## Configuration drift
-
-当前有两个 PaddleX 配置文件：
-
-### `OCR.yaml`
-
-偏保守：
-
-```yaml
-Pipeline:
-  text_det_model: PP-OCRv4_mobile_det
-  text_rec_model: PP-OCRv4_mobile_rec
-  text_rec_batch_size: 1
-```
-
-### `OCR2.yaml`
-
-偏 GPU / 高吞吐：
-
-```yaml
-Pipeline:
-  text_det_model: PP-OCRv4_mobile_det
-  text_rec_model: PP-OCRv4_mobile_rec
-  text_rec_batch_size: 64
-  device: "gpu:0"
-```
-
-未来配置应区分：
-
-1. PaddleX pipeline config；
-2. 本项目的 orchestration config（路径、并发、缓存、resume 等）。
-
-不要把两者混成同一个配置模型。
-
-## Proposed migration map
-
-```text
-pdf_to_png.py
-  -> pdf_render.py
-
-highocr3_f2.py
-highocr3_f2_pdf.py
-highocr3_f2_pdf2.py
-highocr4_f1_pdf_img.py
-  -> discovery.py + ocr.py + pipeline.py + progress.py
-
-pdf_creator_with_text_layer5.py
-pdf_creator_with_text_layer6.py
-pdf_creator_with_text_layer7.py
-pdf_searchable2.5.py
-pdf_searchable3.py
-  -> searchable_pdf.py + ocr_schema.py
-
-del_10min_cache.py
-  -> cache.py + safety.py + explicit CLI command
-
-OCR.yaml / OCR2.yaml
-  -> configs/paddlex/*.yaml
-```
-
-## First code milestone
-
-第一轮真正的代码重构应尽量小：
-
-1. 建立 package skeleton；
-2. 实现不依赖 Paddle 的 config / path safety / discovery helpers；
-3. 为这些 helper 写测试；
-4. 给 legacy scripts 增加 wrapper 或逐步调用新 helper；
-5. 在行为等价确认后再移动脚本。
-
-这样可以避免一次“大重写”把已经处理几十万页时踩过的坑重新踩一遍。
+See `ROADMAP.md` for staged migration and `docs/LEGACY_BEHAVIOR.md` for the frozen compatibility contract.
