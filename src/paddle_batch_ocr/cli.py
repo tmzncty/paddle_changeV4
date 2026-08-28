@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import sys
@@ -19,6 +18,7 @@ from .ocr_runner import OcrRunnerError, run_ocr_batch
 from .pdf_render import PdfRenderError, render_pdf
 from .safety import UnsafePathError
 from .searchable_pdf import SearchablePdfError, build_searchable_pdf
+from .stdio import redirect_process_stdout_to_stderr
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
@@ -204,10 +204,10 @@ def command_ocr(args: argparse.Namespace) -> int:
     }
 
     if args.json:
-        # PaddleX/model-download code may write progress to stdout. Keep stdout a
-        # strict machine-readable channel in --json mode by routing third-party
-        # chatter to stderr only for the duration of OCR execution.
-        with contextlib.redirect_stdout(sys.stderr):
+        # Paddle/PaddleX includes native code that can write directly to fd 1.
+        # Redirect the process-level stdout descriptor while inference runs so
+        # this command's stdout remains a strict JSON channel.
+        with redirect_process_stdout_to_stderr():
             result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
     else:
         result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
