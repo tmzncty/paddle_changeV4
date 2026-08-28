@@ -13,6 +13,8 @@ permissions:
 jobs:
   baseline:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src:.
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]
@@ -30,6 +32,9 @@ jobs:
         run: |
           python -m py_compile \
             find_json_parent.py \
+            src/paddle_batch_ocr/__init__.py \
+            src/paddle_batch_ocr/discovery.py \
+            src/paddle_batch_ocr/safety.py \
             del_10min_cache.py \
             highocr3_f2.py \
             highocr3_f2_pdf.py \
