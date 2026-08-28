@@ -133,12 +133,13 @@ def build_searchable_pdf(
     if not json_root.is_dir():
         raise SearchablePdfError(f"JSON directory does not exist: {json_root}")
 
-    target = Path(output_pdf).expanduser().resolve(strict=False)
+    raw_target = Path(output_pdf).expanduser()
+    if raw_target.is_symlink():
+        raise SearchablePdfError(f"refusing symlinked output PDF: {raw_target}")
+    target = raw_target.resolve(strict=False)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not overwrite:
         raise FileExistsError(f"searchable PDF already exists: {target}")
-    if target.is_symlink():
-        raise SearchablePdfError(f"refusing symlinked output PDF: {target}")
 
     matched_json: List[Path] = []
     for image_path in images:
