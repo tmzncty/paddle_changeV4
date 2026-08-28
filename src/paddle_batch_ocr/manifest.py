@@ -104,18 +104,26 @@ class ManifestStore:
 
         source_path = self._normalize_source(source)
         fingerprint = SourceFingerprint.from_path(Path(source_path))
-        current = self.get_job(Path(source_path), stage)
 
+        # Multiple workers may discover the same source/stage simultaneously.
+        # ON CONFLICT makes first registration idempotent instead of turning a
+        # benign race into IntegrityError.
+        self._conn.execute(
+            """
+            INSERT INTO jobs (
+                source_path, stage, source_size, source_mtime_ns, status
+            ) VALUES (?, ?, ?, ?, 'pending')
+            ON CONFLICT(source_path, stage) DO NOTHING
+            """,
+            (source_path, stage, fingerprint.size, fingerprint.mtime_ns),
+        )
+        self._conn.commit()
+
+        current = self.get_job(Path(source_path), stage)
         if current is None:
-            self._conn.execute(
-                """
-                INSERT INTO jobs (
-                    source_path, stage, source_size, source_mtime_ns, status
-                ) VALUES (?, ?, ?, ?, 'pending')
-                """,
-                (source_path, stage, fingerprint.size, fingerprint.mtime_ns),
-            )
-        elif (
+            raise RuntimeError("manifest failed to materialize job record")
+
+        if (
             current.source_size != fingerprint.size
             or current.source_mtime_ns != fingerprint.mtime_ns
         ):
@@ -123,18 +131,19 @@ class ManifestStore:
                 """
                 UPDATE jobs
                 SET source_size = ?, source_mtime_ns = ?, status = 'pending',
-                    result_path = NULL, error_class = NULL, error_message = NULL,
+                    result_path = NULL, retry_count = 0,
+                    error_class = NULL, error_message = NULL,
                     worker = NULL, device = NULL, started_at = NULL,
                     finished_at = NULL, duration_s = NULL
                 WHERE source_path = ? AND stage = ?
                 """,
                 (fingerprint.size, fingerprint.mtime_ns, source_path, stage),
             )
+            self._conn.commit()
 
-        self._conn.commit()
         refreshed = self.get_job(Path(source_path), stage)
         if refreshed is None:
-            raise RuntimeError("manifest failed to materialize job record")
+            raise RuntimeError("manifest record disappeared after fingerprint refresh")
         return refreshed
 
     def get_job(self, source: Path, stage: str) -> Optional[JobRecord]:
@@ -167,8 +176,9 @@ class ManifestStore:
         self._conn.execute(
             """
             UPDATE jobs
-            SET status = 'running', started_at = ?, finished_at = NULL,
-                duration_s = NULL, error_class = NULL, error_message = NULL,
+            SET status = 'running', result_path = NULL,
+                started_at = ?, finished_at = NULL, duration_s = NULL,
+                error_class = NULL, error_message = NULL,
                 worker = ?, device = ?
             WHERE source_path = ? AND stage = ?
             """,
@@ -221,7 +231,8 @@ class ManifestStore:
         self._conn.execute(
             """
             UPDATE jobs
-            SET status = 'failed', retry_count = retry_count + 1,
+            SET status = 'failed', result_path = NULL,
+                retry_count = retry_count + 1,
                 error_class = ?, error_message = ?, finished_at = ?, duration_s = ?
             WHERE source_path = ? AND stage = ?
             """,
