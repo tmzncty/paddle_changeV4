@@ -53,3 +53,4 @@ jobs:
           python -m pip install --no-deps .
           paddle-batch-ocr --version
           paddle-batch-ocr doctor --json
+          paddle-batch-ocr manifest status --config examples/config.json --json
