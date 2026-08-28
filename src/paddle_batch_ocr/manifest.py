@@ -52,7 +52,10 @@ class ManifestStore:
     """
 
     def __init__(self, path: Path):
-        self.path = Path(path).expanduser().resolve(strict=False)
+        raw_path = Path(path).expanduser()
+        if raw_path.is_symlink():
+            raise ValueError(f"refusing symlinked manifest database: {raw_path}")
+        self.path = raw_path.resolve(strict=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), timeout=30.0)
         self._conn.row_factory = sqlite3.Row
