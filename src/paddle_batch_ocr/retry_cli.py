@@ -153,7 +153,11 @@ def command_manifest_retry_failed(args: argparse.Namespace) -> int:
                 if item.error:
                     print(f"  {item.error}")
 
-        return 1 if result.failed_count else 0
+        unresolved = (
+            result.failed_count
+            + result.ineligible_count
+        )
+        return 1 if unresolved else 0
     except RetryError as exc:
         # The main CLI already normalizes ValueError into a concise parser-style
         # error rather than a traceback.
