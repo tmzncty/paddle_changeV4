@@ -74,8 +74,33 @@ class ManifestReportingCliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             jobs = json.loads(stdout.getvalue())
             self.assertEqual(jobs["count"], 1)
+            self.assertEqual(jobs["total_matching"], 1)
             self.assertEqual(jobs["jobs"][0]["error_class"], "RuntimeError")
             self.assertEqual(jobs["jobs"][0]["error_message"], "decode failed")
+
+    def test_jobs_json_distinguishes_page_count_from_total_matching(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = self._write_config(root)
+            self._populate(root)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = main(
+                    [
+                        "manifest",
+                        "jobs",
+                        "--config",
+                        str(config),
+                        "--limit",
+                        "1",
+                        "--json",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["total_matching"], 2)
 
     def test_jobs_csv_is_machine_readable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -124,6 +149,7 @@ class ManifestReportingCliTests(unittest.TestCase):
             self.assertFalse(manifest.exists())
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload["jobs"], [])
+            self.assertEqual(payload["total_matching"], 0)
 
     def test_invalid_limit_returns_cli_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
