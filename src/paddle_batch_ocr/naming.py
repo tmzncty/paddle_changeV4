@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Optional, Tuple
 
 
 _PAGE_RE = re.compile(r"page_(\d+)", re.IGNORECASE)
@@ -40,11 +40,10 @@ def candidate_json_names(image_name: str) -> Tuple[str, ...]:
         ]
     )
 
-    # Preserve precedence while removing duplicates.
     return tuple(dict.fromkeys(names))
 
 
-def find_matching_json(image_name: str, json_dir: Path) -> Path | None:
+def find_matching_json(image_name: str, json_dir: Path) -> Optional[Path]:
     root = Path(json_dir)
     for candidate in candidate_json_names(image_name):
         path = root / candidate
