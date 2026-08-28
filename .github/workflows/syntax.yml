@@ -126,12 +126,16 @@ jobs:
 
       - name: Run real PaddleX OCR through project CLI
         run: |
+          set +e
           paddle-batch-ocr ocr /tmp/general_ocr_001.png \
             --output /tmp/ocr-json \
             --pipeline configs/paddlex/ocr-ci-small.yaml \
             --device cpu \
             --json > /tmp/ocr-summary.json
+          ocr_rc=$?
+          set -e
           cat /tmp/ocr-summary.json
+          exit "$ocr_rc"
 
       - name: Validate produced OCR JSON through project schema
         env:
