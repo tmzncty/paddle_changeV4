@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -188,20 +190,28 @@ def command_searchable_pdf(args: argparse.Namespace) -> int:
 
 
 def command_ocr(args: argparse.Namespace) -> int:
-    result = run_ocr_batch(
-        Path(args.input),
-        Path(args.output),
-        pipeline_ref=args.pipeline,
-        device=args.device,
-        engine=args.engine,
-        use_hpip=True if args.use_hpip else None,
-        manifest_path=Path(args.manifest) if args.manifest else None,
-        resume=not args.no_resume,
-        overwrite=args.overwrite,
-        use_doc_orientation_classify=args.use_doc_orientation_classify,
-        use_doc_unwarping=args.use_doc_unwarping,
-        use_textline_orientation=args.use_textline_orientation,
-    )
+    run_kwargs = {
+        "pipeline_ref": args.pipeline,
+        "device": args.device,
+        "engine": args.engine,
+        "use_hpip": True if args.use_hpip else None,
+        "manifest_path": Path(args.manifest) if args.manifest else None,
+        "resume": not args.no_resume,
+        "overwrite": args.overwrite,
+        "use_doc_orientation_classify": args.use_doc_orientation_classify,
+        "use_doc_unwarping": args.use_doc_unwarping,
+        "use_textline_orientation": args.use_textline_orientation,
+    }
+
+    if args.json:
+        # PaddleX/model-download code may write progress to stdout. Keep stdout a
+        # strict machine-readable channel in --json mode by routing third-party
+        # chatter to stderr only for the duration of OCR execution.
+        with contextlib.redirect_stdout(sys.stderr):
+            result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
+    else:
+        result = run_ocr_batch(Path(args.input), Path(args.output), **run_kwargs)
+
     payload = {
         "success": result.success_count,
         "skipped": result.skipped_count,
