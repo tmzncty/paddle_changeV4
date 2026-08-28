@@ -1,7 +1,7 @@
 """Safety primitives for destructive filesystem operations.
 
-Legacy scripts contain recursive cache deletion.  New code should validate
-paths here before any delete/overwrite implementation is allowed to act.
+Legacy scripts contain recursive cache deletion. New code validates paths here
+before any delete/overwrite implementation is allowed to act.
 """
 
 from __future__ import annotations
@@ -49,13 +49,12 @@ def validate_destructive_target(
 
     Rules:
 
-    - the configured allowed root itself must not be the filesystem root;
-    - the target must be inside the allowed root;
-    - the target must not be the filesystem root, user home, or current working
-      directory;
+    - the allowed root must not itself be filesystem root, user home or cwd;
+    - the target must be inside the allowed root after symlink resolution;
+    - the target must not be filesystem root, user home or cwd;
     - deleting the allowed root itself is rejected unless ``allow_root=True``.
 
-    The function performs validation only.  It does not delete anything.
+    The function performs validation only. It does not delete anything.
     """
 
     resolved_target = _resolve(target)
@@ -64,16 +63,19 @@ def validate_destructive_target(
     filesystem_root = Path(resolved_root.anchor or os.sep).resolve(strict=False)
     home = Path.home().resolve(strict=False)
     cwd = Path.cwd().resolve(strict=False)
+    protected = {filesystem_root, home, cwd}
 
-    if resolved_root == filesystem_root:
-        raise UnsafePathError("filesystem root cannot be used as an allowed destructive root")
+    if resolved_root in protected:
+        raise UnsafePathError(
+            f"protected path cannot be used as an allowed destructive root: {resolved_root}"
+        )
 
     if not is_within(resolved_target, resolved_root):
         raise UnsafePathError(
             f"destructive target {resolved_target} is outside allowed root {resolved_root}"
         )
 
-    if resolved_target in {filesystem_root, home, cwd}:
+    if resolved_target in protected:
         raise UnsafePathError(f"refusing destructive operation on protected path {resolved_target}")
 
     if resolved_target == resolved_root and not allow_root:
