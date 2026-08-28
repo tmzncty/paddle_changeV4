@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -37,10 +38,45 @@ class JobRecord:
     started_at: Optional[str]
     finished_at: Optional[str]
     duration_s: Optional[float]
+    intended_result_path: Optional[str]
+    execution_profile_json: Optional[str]
+
+    @property
+    def execution_profile(self) -> Optional[Dict[str, Any]]:
+        if self.execution_profile_json is None:
+            return None
+        value = json.loads(self.execution_profile_json)
+        if not isinstance(value, dict):
+            raise ValueError("stored execution profile must decode to a JSON object")
+        return value
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_intended_result(path: Optional[Path]) -> Optional[str]:
+    if path is None:
+        return None
+    return os.fspath(Path(path).expanduser().resolve(strict=False))
+
+
+def _serialize_execution_profile(
+    profile: Optional[Mapping[str, object]],
+) -> Optional[str]:
+    if profile is None:
+        return None
+    if not isinstance(profile, Mapping):
+        raise TypeError("execution_profile must be a mapping")
+    try:
+        return json.dumps(
+            dict(profile),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise TypeError("execution_profile must contain JSON-serializable values") from exc
 
 
 class ManifestStore:
@@ -49,6 +85,11 @@ class ManifestStore:
     Each process should open its own ``ManifestStore``. WAL mode plus a 30-second
     busy timeout lets short worker commits wait for one another instead of
     immediately failing with ``database is locked``.
+
+    ``intended_result_path`` and ``execution_profile_json`` describe the output
+    target and requested execution semantics even when an attempt fails. Older
+    manifests are migrated in place without invalidating successful work merely
+    because they do not yet have a trustworthy execution profile.
     """
 
     def __init__(self, path: Path):
@@ -65,28 +106,62 @@ class ManifestStore:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                source_path TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                source_size INTEGER NOT NULL,
-                source_mtime_ns INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                result_path TEXT,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                error_class TEXT,
-                error_message TEXT,
-                worker TEXT,
-                device TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                duration_s REAL,
-                PRIMARY KEY (source_path, stage)
+        # BEGIN IMMEDIATE serializes first-open migrations across spawned workers.
+        # A second process waits, then re-reads table_info after the first process
+        # commits instead of racing the same ALTER TABLE statement.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs (
+                    source_path TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    source_size INTEGER NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    result_path TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    error_class TEXT,
+                    error_message TEXT,
+                    worker TEXT,
+                    device TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    duration_s REAL,
+                    intended_result_path TEXT,
+                    execution_profile_json TEXT,
+                    PRIMARY KEY (source_path, stage)
+                )
+                """
             )
-            """
-        )
-        self._conn.commit()
+
+            columns = {
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "intended_result_path" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE jobs ADD COLUMN intended_result_path TEXT"
+                )
+            if "execution_profile_json" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE jobs ADD COLUMN execution_profile_json TEXT"
+                )
+
+            # A successful historical result is safe evidence for its intended
+            # output path. Execution options cannot be reconstructed safely, so
+            # legacy profiles deliberately remain NULL rather than being guessed.
+            self._conn.execute(
+                """
+                UPDATE jobs
+                SET intended_result_path = result_path
+                WHERE intended_result_path IS NULL AND result_path IS NOT NULL
+                """
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
 
     def close(self) -> None:
         self._conn.close()
@@ -101,12 +176,21 @@ class ManifestStore:
     def _normalize_source(path: Path) -> str:
         return os.fspath(Path(path).expanduser().resolve(strict=True))
 
-    def ensure_job(self, source: Path, stage: str) -> JobRecord:
+    def ensure_job(
+        self,
+        source: Path,
+        stage: str,
+        *,
+        intended_result_path: Optional[Path] = None,
+        execution_profile: Optional[Mapping[str, object]] = None,
+    ) -> JobRecord:
         if not stage or not stage.strip():
             raise ValueError("stage must be a non-empty string")
 
         source_path = self._normalize_source(source)
         fingerprint = SourceFingerprint.from_path(Path(source_path))
+        requested_result = _normalize_intended_result(intended_result_path)
+        requested_profile = _serialize_execution_profile(execution_profile)
 
         # Multiple workers may discover the same source/stage simultaneously.
         # ON CONFLICT makes first registration idempotent instead of turning a
@@ -114,11 +198,19 @@ class ManifestStore:
         self._conn.execute(
             """
             INSERT INTO jobs (
-                source_path, stage, source_size, source_mtime_ns, status
-            ) VALUES (?, ?, ?, ?, 'pending')
+                source_path, stage, source_size, source_mtime_ns, status,
+                intended_result_path, execution_profile_json
+            ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
             ON CONFLICT(source_path, stage) DO NOTHING
             """,
-            (source_path, stage, fingerprint.size, fingerprint.mtime_ns),
+            (
+                source_path,
+                stage,
+                fingerprint.size,
+                fingerprint.mtime_ns,
+                requested_result,
+                requested_profile,
+            ),
         )
         self._conn.commit()
 
@@ -126,10 +218,22 @@ class ManifestStore:
         if current is None:
             raise RuntimeError("manifest failed to materialize job record")
 
-        if (
+        fingerprint_changed = (
             current.source_size != fingerprint.size
             or current.source_mtime_ns != fingerprint.mtime_ns
-        ):
+        )
+        intended_changed = (
+            requested_result is not None
+            and current.intended_result_path is not None
+            and current.intended_result_path != requested_result
+        )
+        profile_changed = (
+            requested_profile is not None
+            and current.execution_profile_json is not None
+            and current.execution_profile_json != requested_profile
+        )
+
+        if fingerprint_changed or intended_changed or profile_changed:
             self._conn.execute(
                 """
                 UPDATE jobs
@@ -137,10 +241,36 @@ class ManifestStore:
                     result_path = NULL, retry_count = 0,
                     error_class = NULL, error_message = NULL,
                     worker = NULL, device = NULL, started_at = NULL,
-                    finished_at = NULL, duration_s = NULL
+                    finished_at = NULL, duration_s = NULL,
+                    intended_result_path = COALESCE(?, intended_result_path),
+                    execution_profile_json = COALESCE(?, execution_profile_json)
                 WHERE source_path = ? AND stage = ?
                 """,
-                (fingerprint.size, fingerprint.mtime_ns, source_path, stage),
+                (
+                    fingerprint.size,
+                    fingerprint.mtime_ns,
+                    requested_result,
+                    requested_profile,
+                    source_path,
+                    stage,
+                ),
+            )
+            self._conn.commit()
+        elif current.status != "success" and (
+            (requested_result is not None and current.intended_result_path is None)
+            or (requested_profile is not None and current.execution_profile_json is None)
+        ):
+            # Pending/failed records can safely learn the currently requested
+            # target/profile before the next attempt. Successful legacy records
+            # keep an unknown profile unknown instead of receiving guessed provenance.
+            self._conn.execute(
+                """
+                UPDATE jobs
+                SET intended_result_path = COALESCE(intended_result_path, ?),
+                    execution_profile_json = COALESCE(execution_profile_json, ?)
+                WHERE source_path = ? AND stage = ?
+                """,
+                (requested_result, requested_profile, source_path, stage),
             )
             self._conn.commit()
 
@@ -159,8 +289,20 @@ class ManifestStore:
             return None
         return JobRecord(**dict(row))
 
-    def needs_run(self, source: Path, stage: str) -> bool:
-        record = self.ensure_job(source, stage)
+    def needs_run(
+        self,
+        source: Path,
+        stage: str,
+        *,
+        intended_result_path: Optional[Path] = None,
+        execution_profile: Optional[Mapping[str, object]] = None,
+    ) -> bool:
+        record = self.ensure_job(
+            source,
+            stage,
+            intended_result_path=intended_result_path,
+            execution_profile=execution_profile,
+        )
         if record.status != "success":
             return True
         if record.result_path and not Path(record.result_path).exists():
@@ -174,18 +316,37 @@ class ManifestStore:
         *,
         worker: Optional[str] = None,
         device: Optional[str] = None,
+        intended_result_path: Optional[Path] = None,
+        execution_profile: Optional[Mapping[str, object]] = None,
     ) -> JobRecord:
-        record = self.ensure_job(source, stage)
+        record = self.ensure_job(
+            source,
+            stage,
+            intended_result_path=intended_result_path,
+            execution_profile=execution_profile,
+        )
+        normalized_result = _normalize_intended_result(intended_result_path)
+        profile_json = _serialize_execution_profile(execution_profile)
         self._conn.execute(
             """
             UPDATE jobs
             SET status = 'running', result_path = NULL,
                 started_at = ?, finished_at = NULL, duration_s = NULL,
                 error_class = NULL, error_message = NULL,
-                worker = ?, device = ?
+                worker = ?, device = ?,
+                intended_result_path = COALESCE(?, intended_result_path),
+                execution_profile_json = COALESCE(?, execution_profile_json)
             WHERE source_path = ? AND stage = ?
             """,
-            (_now_iso(), worker, device, record.source_path, stage),
+            (
+                _now_iso(),
+                worker,
+                device,
+                normalized_result,
+                profile_json,
+                record.source_path,
+                stage,
+            ),
         )
         self._conn.commit()
         refreshed = self.get_job(Path(record.source_path), stage)
@@ -202,19 +363,23 @@ class ManifestStore:
         duration_s: Optional[float] = None,
     ) -> JobRecord:
         record = self.ensure_job(source, stage)
-        normalized_result = (
-            os.fspath(Path(result_path).expanduser().resolve(strict=False))
-            if result_path is not None
-            else None
-        )
+        normalized_result = _normalize_intended_result(result_path)
         self._conn.execute(
             """
             UPDATE jobs
             SET status = 'success', result_path = ?, finished_at = ?,
-                duration_s = ?, error_class = NULL, error_message = NULL
+                duration_s = ?, error_class = NULL, error_message = NULL,
+                intended_result_path = COALESCE(intended_result_path, ?)
             WHERE source_path = ? AND stage = ?
             """,
-            (normalized_result, _now_iso(), duration_s, record.source_path, stage),
+            (
+                normalized_result,
+                _now_iso(),
+                duration_s,
+                normalized_result,
+                record.source_path,
+                stage,
+            ),
         )
         self._conn.commit()
         refreshed = self.get_job(Path(record.source_path), stage)
