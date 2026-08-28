@@ -153,10 +153,18 @@ def run_ocr_batch(
     )
 
     pipeline: Optional[object] = None
+    pipeline_error: Optional[Exception] = None
 
     def get_pipeline() -> object:
-        nonlocal pipeline
-        if pipeline is None:
+        nonlocal pipeline, pipeline_error
+        if pipeline is not None:
+            return pipeline
+        if pipeline_error is not None:
+            raise OcrRunnerError(
+                "PaddleX pipeline initialization previously failed: "
+                f"{type(pipeline_error).__name__}: {pipeline_error}"
+            ) from pipeline_error
+        try:
             pipeline = create_ocr_pipeline(
                 pipeline_ref,
                 device=device,
@@ -164,6 +172,12 @@ def run_ocr_batch(
                 use_hpip=use_hpip,
                 create_pipeline_fn=create_pipeline_fn,
             )
+        except Exception as exc:
+            # Cache a batch-wide initialization failure. A broken runtime/model
+            # setup must not repeat expensive pipeline construction once per
+            # image in a very large input tree.
+            pipeline_error = exc
+            raise
         return pipeline
 
     store = ManifestStore(manifest_path) if manifest_path is not None else None
